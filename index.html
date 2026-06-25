@@ -552,15 +552,42 @@ function scopeLabel(){
    發音（Web Speech API）
    ============================================================ */
 const speechOK = ("speechSynthesis" in window);
+let _voices = [];
+function loadVoices(){ try{ _voices = window.speechSynthesis.getVoices() || []; }catch(e){} }
+if(speechOK){
+  loadVoices();
+  // 部分瀏覽器語音清單為非同步載入，需監聽事件補抓
+  if("onvoiceschanged" in window.speechSynthesis) window.speechSynthesis.onvoiceschanged = loadVoices;
+}
+// 是否含中日韓文字 → 用來判斷該用中文還是英文語音
+function hasCJK(s){ return /[㐀-鿿豈-﫿]/.test(String(s)); }
+// 依語言挑一個已安裝的語音（找不到完全相符就退而求其次同語系）
+function pickVoice(lang){
+  const lc=lang.toLowerCase();
+  return _voices.find(v=>v.lang && v.lang.toLowerCase()===lc)
+      || _voices.find(v=>v.lang && v.lang.toLowerCase().startsWith(lc.split("-")[0]));
+}
 function speak(text){
   if(!speechOK){ toast("此瀏覽器不支援發音功能"); return; }
   try{
     window.speechSynthesis.cancel();
+    if(!_voices.length) loadVoices();
+    const zh = hasCJK(text);
+    const lang = zh ? "zh-TW" : "en-US";
+    const voice = pickVoice(lang) || (zh ? pickVoice("zh") : null);
+    if(zh && !voice){ toast("此裝置沒有安裝中文語音，無法朗讀中文"); return; }
     const u=new SpeechSynthesisUtterance(text);
-    u.lang="en-US";
+    u.lang = voice ? voice.lang : lang;
+    if(voice) u.voice = voice;
     u.rate=state.settings.rate; u.volume=state.settings.volume; u.pitch=state.settings.pitch;
     window.speechSynthesis.speak(u);
   }catch(e){ /* 靜默 */ }
+}
+// 整理單字的中文朗讀字串：合併各義、去掉括號註記與符號，念起來較順
+function zhSpeakText(w){
+  let t=w.senses.map(s=>s.meaning).join("，");
+  const cleaned=t.replace(/[\(（\[【][^)）\]】]*[\)）\]】]/g,"").replace(/[；;]/g,"，").replace(/[≒≠=]/g,"").trim();
+  return cleaned || t;
 }
 
 /* ============================================================
@@ -890,8 +917,8 @@ function renderFc(v){
 
   $("#fcBack").onclick=()=>go("home");
   $("#fcSet").onclick=openFcSettings;
-  $("#fcPlay").onclick=e=>{e.stopPropagation();speak(w.word);};
-  $("#fcPlay2").onclick=e=>{e.stopPropagation();speak(w.word);};
+  $("#fcPlay").onclick=e=>{e.stopPropagation();speak(w.word);};         // 正面：念英文
+  $("#fcPlay2").onclick=e=>{e.stopPropagation();speak(zhSpeakText(w));}; // 背面：念中文
   $("#fcFav").onclick=e=>{e.stopPropagation();toggleFav(w.id);renderFc(v);};
   $("#fcCard").onclick=flipCard;
   $("#fcPrev").onclick=()=>fcMove(-1,v);
