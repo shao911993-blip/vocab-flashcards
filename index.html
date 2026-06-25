@@ -389,6 +389,7 @@ function defaultSettings(){
     listenFirst:false,
     // 自動連續播放
     apRepeat:1,        // 每字英文朗讀次數
+    apItemGap:0.5,     // 同卡內段落間停頓（英文重複、英文→中文）（秒）
     apZh:true,         // 是否接著念中文意思
     apFlip:true,       // 念中文時自動翻面顯示中文
     apGap:0.8,         // 卡片間隔（秒）
@@ -630,7 +631,15 @@ function speakSequence(items, onAllDone){
     const voice=pickVoice(it.zh?"zh-TW":"en-US")||(it.zh?pickVoice("zh"):null);
     if(it.zh && !voice){ next(); return; }         // 沒中文語音就略過中文
     let advanced=false;
-    const cont=()=>{ if(advanced)return; advanced=true; if(myToken===autoPlay.token) next(); };
+    const cont=()=>{
+      if(advanced)return; advanced=true;
+      if(myToken!==autoPlay.token) return;
+      // 同一張卡片內，段落之間（英文重複、英文→中文）插入「詞間停頓」
+      if(i>=items.length){ next(); return; }      // 最後一段不加（換卡停頓由 autoStep 處理）
+      const gap=Math.max(0,Number(state.settings.apItemGap)||0)*1000;
+      if(gap>0) setTimeout(()=>{ if(myToken===autoPlay.token) next(); }, gap);
+      else next();
+    };
     try{
       const u=new SpeechSynthesisUtterance(it.text);
       u.lang=voice?voice.lang:(it.zh?"zh-TW":"en-US");
@@ -1130,6 +1139,10 @@ function openFcSettings(){
       <div class="muted small" style="margin-bottom:6px">每字朗讀次數</div>
       <div class="seg" style="margin-bottom:14px">
         ${[1,2,3].map(n=>`<button data-set="apRepeat" data-val="${n}" class="${String(s.apRepeat)===String(n)?'active':''}">${n} 次</button>`).join("")}
+      </div>
+      <div class="muted small" style="margin-bottom:6px">詞間停頓（英文重複、英文→中文之間）</div>
+      <div class="seg" style="margin-bottom:14px">
+        ${[["0","無"],["0.5","0.5s"],["1","1s"],["1.5","1.5s"]].map(o=>`<button data-set="apItemGap" data-val="${o[0]}" class="${String(s.apItemGap)===o[0]?'active':''}">${o[1]}</button>`).join("")}
       </div>
       <div class="muted small" style="margin-bottom:6px">卡片間隔</div>
       <div class="seg" style="margin-bottom:14px">
