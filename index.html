@@ -98,6 +98,7 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:.3px;}
   cursor:pointer;transition:.15s;
 }
 .iconbtn:active{transform:scale(.9);background:#1d2745;}
+.iconbtn.playing{background:var(--primary);color:#fff;}
 
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
@@ -385,7 +386,13 @@ function defaultSettings(){
     fcOnlyWeak:false,
     fcOnlyToday:false,
     autoplay:false,
-    listenFirst:false
+    listenFirst:false,
+    // 自動連續播放
+    apRepeat:1,        // 每字英文朗讀次數
+    apZh:true,         // 是否接著念中文意思
+    apFlip:true,       // 念中文時自動翻面顯示中文
+    apGap:0.8,         // 卡片間隔（秒）
+    apLoop:false       // 播到最後是否循環
   };
 }
 
@@ -591,6 +598,101 @@ function zhSpeakText(w){
 }
 
 /* ============================================================
+   自動連續播放（聽力複習）
+   - 念完一張（英文 N 次 → 可選中文）才換下一張，全程用 onend 串接
+   - token 機制：暫停 / 換頁時讓進行中的 callback 立即失效
+   ============================================================ */
+const autoPlay = { on:false, token:0 };
+
+// 一張卡片要念的序列：英文重複 N 次（停在正面）→ 可選中文（翻到背面）
+function buildSpeakQueue(w){
+  const q=[];
+  const n=Math.max(1, Number(state.settings.apRepeat)||1);
+  for(let i=0;i<n;i++) q.push({text:w.word, zh:false});
+  if(state.settings.apZh){
+    const zt=zhSpeakText(w);
+    if(zt) q.push({text:zt, zh:true});
+  }
+  return q;
+}
+
+// 依序朗讀一個序列，全部念完才呼叫 onAllDone
+function speakSequence(items, onAllDone){
+  const myToken=autoPlay.token;
+  let i=0;
+  function next(){
+    if(myToken!==autoPlay.token) return;          // 已被取消
+    if(i>=items.length){ onAllDone&&onAllDone(); return; }
+    const it=items[i++];
+    if(!speechOK || !it.text){ next(); return; }
+    // 念中文時自動翻面顯示中文
+    if(state.settings.apFlip) setFcFace(it.zh);
+    const voice=pickVoice(it.zh?"zh-TW":"en-US")||(it.zh?pickVoice("zh"):null);
+    if(it.zh && !voice){ next(); return; }         // 沒中文語音就略過中文
+    let advanced=false;
+    const cont=()=>{ if(advanced)return; advanced=true; if(myToken===autoPlay.token) next(); };
+    try{
+      const u=new SpeechSynthesisUtterance(it.text);
+      u.lang=voice?voice.lang:(it.zh?"zh-TW":"en-US");
+      if(voice)u.voice=voice;
+      u.rate=state.settings.rate; u.volume=state.settings.volume; u.pitch=state.settings.pitch;
+      u.onend=cont; u.onerror=cont;
+      // 後備計時：萬一 onend 不觸發（部分行動瀏覽器），估算時間後仍前進
+      setTimeout(cont, Math.max(1400, it.text.length*230/(state.settings.rate||1)) + 1200);
+      window.speechSynthesis.speak(u);
+    }catch(e){ cont(); }
+  }
+  next();
+}
+
+function setFcFace(toBack){
+  const c=document.getElementById("fcCard"); if(!c)return;
+  fcState.flipped=!!toBack; c.classList.toggle("flip",!!toBack);
+}
+function updateAutoBtn(){
+  const b=document.getElementById("fcAuto");
+  if(!b)return;
+  b.textContent=autoPlay.on?"⏸":"▶︎";
+  b.classList.toggle("playing",autoPlay.on);
+}
+
+function toggleAutoPlay(v){ autoPlay.on ? stopAutoPlay() : startAutoPlay(v); }
+
+function startAutoPlay(v){
+  if(!speechOK){ toast("此瀏覽器不支援發音功能"); return; }
+  if(!fcState.list.length) return;
+  try{ window.speechSynthesis.cancel(); }catch(e){}   // 清掉先前手動播放的殘留
+  autoPlay.on=true; autoPlay.token++;
+  updateAutoBtn();
+  autoStep(v);
+}
+function stopAutoPlay(){
+  if(!autoPlay.on && autoPlay.token===0){ return; }
+  autoPlay.on=false; autoPlay.token++;            // 讓進行中的 callback 失效
+  try{ window.speechSynthesis.cancel(); }catch(e){}
+  updateAutoBtn();
+}
+function autoStep(v){
+  if(!autoPlay.on) return;
+  const myToken=autoPlay.token;
+  const w=fcState.list[fcState.idx];
+  speakSequence(buildSpeakQueue(w), ()=>{
+    if(myToken!==autoPlay.token || !autoPlay.on) return;
+    setTimeout(()=>{
+      if(myToken!==autoPlay.token || !autoPlay.on) return;
+      if(fcState.idx+1>=fcState.list.length){
+        if(state.settings.apLoop){ fcState.idx=0; }
+        else { stopAutoPlay(); toast("自動播放結束 🎉"); return; }
+      }else{
+        fcState.idx++;
+      }
+      renderFc(v);          // 換下一張（會重畫成正面）
+      autoStep(v);          // 繼續播放
+    }, Math.max(0,Number(state.settings.apGap)||0)*1000);
+  });
+}
+
+/* ============================================================
    單字顯示輔助
    ============================================================ */
 function sensesHtml(w){
@@ -635,6 +737,7 @@ const navGroup={home:"home",flashcards:"flashcards",learn:"learn",
   testSetup:"testSetup",test:"testSetup",stats:"stats"};
 
 function go(view){
+  if(typeof stopAutoPlay==="function") stopAutoPlay();  // 換頁即停止自動播放與發音
   state.view=view;
   const v=viewEl();
   v.scrollTop=0;
@@ -875,13 +978,16 @@ function renderFc(v){
   const w=fcState.list[fcState.idx];
   const p=getProg(w.id);
   fcState.flipped=false;
-  fcState.revealed=!state.settings.listenFirst; // 先聽再看：未揭曉
+  fcState.revealed=!state.settings.listenFirst || autoPlay.on; // 先聽再看：未揭曉（自動播放時強制揭曉）
   v.innerHTML=`
     <div class="topbar">
       <button class="iconbtn" id="fcBack">←</button>
       <div class="center"><div style="font-weight:700">${fcState.idx+1} / ${fcState.list.length}</div>
         <div class="muted small">${esc(w.part)} Unit ${w.unit}</div></div>
-      <button class="iconbtn" id="fcSet">⚙️</button>
+      <div class="row" style="gap:6px">
+        <button class="iconbtn ${autoPlay.on?'playing':''}" id="fcAuto" title="自動播放">${autoPlay.on?'⏸':'▶︎'}</button>
+        <button class="iconbtn" id="fcSet">⚙️</button>
+      </div>
     </div>
 
     <div class="fc-wrap">
@@ -916,14 +1022,16 @@ function renderFc(v){
   paintFcFaces();
 
   $("#fcBack").onclick=()=>go("home");
-  $("#fcSet").onclick=openFcSettings;
-  $("#fcPlay").onclick=e=>{e.stopPropagation();speak(w.word);};         // 正面：念英文
-  $("#fcPlay2").onclick=e=>{e.stopPropagation();speak(zhSpeakText(w));}; // 背面：念中文
+  $("#fcSet").onclick=()=>{stopAutoPlay();openFcSettings();};
+  $("#fcAuto").onclick=e=>{e.stopPropagation();toggleAutoPlay(v);};
+  $("#fcPlay").onclick=e=>{e.stopPropagation();stopAutoPlay();speak(w.word);};         // 正面：念英文
+  $("#fcPlay2").onclick=e=>{e.stopPropagation();stopAutoPlay();speak(zhSpeakText(w));}; // 背面：念中文
   $("#fcFav").onclick=e=>{e.stopPropagation();toggleFav(w.id);renderFc(v);};
   $("#fcCard").onclick=flipCard;
-  $("#fcPrev").onclick=()=>fcMove(-1,v);
-  $("#fcNext").onclick=()=>fcMove(1,v);
+  $("#fcPrev").onclick=()=>{stopAutoPlay();fcMove(-1,v);};
+  $("#fcNext").onclick=()=>{stopAutoPlay();fcMove(1,v);};
   v.querySelectorAll("[data-fam]").forEach(b=>b.onclick=()=>{
+    stopAutoPlay();
     setFamiliarity(w.id,b.dataset.fam);
     toast(b.dataset.fam==="weak"?"標記：不熟（明天複習）":b.dataset.fam==="normal"?"標記：普通（3天後）":"標記：熟（7天後）");
     fcMove(1,v);
@@ -931,8 +1039,9 @@ function renderFc(v){
 
   // 觸控滑動
   setupSwipe($("#fcCard"),v);
-  // 自動播放
-  if(state.settings.autoplay && fcState.revealed) speak(w.word);
+  updateAutoBtn();
+  // 單張自動播放（舊行為）：自動連播進行中時不重複觸發
+  if(state.settings.autoplay && fcState.revealed && !autoPlay.on) speak(w.word);
 }
 
 function bucketLabel(id){return {familiar:"熟",normal:"普通",weak:"不熟",new:"未學"}[bucket(id)];}
@@ -964,6 +1073,7 @@ function enBackOrFront(w,full){
 
 function flipCard(){
   const c=$("#fcCard"); if(!c)return;
+  if(autoPlay.on) stopAutoPlay();   // 手動操作即接管，停止自動播放
   if(state.settings.listenFirst && !fcState.revealed){
     fcState.revealed=true; paintFcFaces();
     if(state.settings.autoplay) speak(fcState.list[fcState.idx].word);
@@ -972,6 +1082,7 @@ function flipCard(){
   c.classList.toggle("flip",fcState.flipped);
 }
 function fcMove(dir,v){
+  if(autoPlay.on) stopAutoPlay();   // 手動換卡即停止自動播放
   const n=fcState.idx+dir;
   if(n<0){ toast("已是第一張"); return; }
   if(n>=fcState.list.length){ toast("已完成本範圍 🎉"); return; }
@@ -1009,9 +1120,29 @@ function openFcSettings(){
     <div class="panel">
       ${toggleRow("只看不熟","fcOnlyWeak",s.fcOnlyWeak)}
       ${toggleRow("只看今日複習","fcOnlyToday",s.fcOnlyToday)}
-      ${toggleRow("自動播放發音","autoplay",s.autoplay)}
+      ${toggleRow("單張自動發音","autoplay",s.autoplay)}
       ${toggleRow("先聽再看模式","listenFirst",s.listenFirst)}
     </div>
+
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:4px">自動連續播放 ▶︎</div>
+      <div class="muted small" style="margin-bottom:10px">按字卡右上角 ▶︎ 開始；念完一張才換下一張</div>
+      <div class="muted small" style="margin-bottom:6px">每字朗讀次數</div>
+      <div class="seg" style="margin-bottom:14px">
+        ${[1,2,3].map(n=>`<button data-set="apRepeat" data-val="${n}" class="${String(s.apRepeat)===String(n)?'active':''}">${n} 次</button>`).join("")}
+      </div>
+      <div class="muted small" style="margin-bottom:6px">卡片間隔</div>
+      <div class="seg" style="margin-bottom:14px">
+        ${[["0.3","0.3s"],["0.8","0.8s"],["1.5","1.5s"],["2.5","2.5s"]].map(o=>`<button data-set="apGap" data-val="${o[0]}" class="${String(s.apGap)===o[0]?'active':''}">${o[1]}</button>`).join("")}
+      </div>
+      <div class="set-row"><span>朗讀速度</span>
+        <span class="row"><input type="range" id="apRate" min="0.5" max="1.5" step="0.05" value="${s.rate}">
+        <span class="muted small" id="apRateVal" style="width:38px;text-align:right">${Number(s.rate).toFixed(2)}</span></span></div>
+      ${toggleRow("念中文意思","apZh",s.apZh)}
+      ${toggleRow("念中文時翻面顯示","apFlip",s.apFlip)}
+      ${toggleRow("播完循環","apLoop",s.apLoop)}
+    </div>
+
     <button class="btn primary" id="sApply">套用</button>`;
   const v=viewEl(); v.innerHTML=html;
   v.querySelectorAll("[data-set]").forEach(b=>b.onclick=()=>{
@@ -1020,6 +1151,8 @@ function openFcSettings(){
   v.querySelectorAll("[data-toggle]").forEach(t=>t.onchange=()=>{
     state.settings[t.dataset.toggle]=t.checked; saveSettings();
   });
+  const rr=$("#apRate");
+  if(rr)rr.oninput=()=>{ state.settings.rate=Number(rr.value); const l=$("#apRateVal"); if(l)l.textContent=Number(rr.value).toFixed(2); saveSettings(); };
   $("#sBack").onclick=()=>go("flashcards");
   $("#sApply").onclick=()=>go("flashcards");
 }
