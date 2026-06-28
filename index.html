@@ -360,11 +360,14 @@ select{
 
 /* ---------- localStorage 鍵名 ---------- */
 const LS = {
-  data:    "vocab_data_v1",
+  data:    "vocab_data_v1",        // 舊版單本快取（用於自動遷移到書庫）
   prog:    "vocab_progress_v1",
   settings:"vocab_settings_v1",
-  scope:   "vocab_scope_v1"
+  scope:   "vocab_scope_v1",
+  library: "vocab_library_v1",     // 書庫目錄（書本 meta 陣列）
+  curBook: "vocab_curbook_v1"      // 目前使用中的書本 id
 };
+function bookKey(id){ return "vocab_book_"+id; }   // 各書本 JSON 的儲存鍵
 
 /* ---------- 全域狀態 ---------- */
 const state = {
@@ -375,7 +378,9 @@ const state = {
   prog:{},         // id -> 學習狀態
   settings:defaultSettings(),
   scope:{part:"all",unit:"all",special:null}, // special: null | 'fav' | 'wrong'
-  view:"import"
+  view:"import",
+  library:[],      // 書本 meta 陣列：{id,name,levels,total,prefix,addedAt}
+  book:null        // 目前使用中的書本 meta
 };
 
 function defaultSettings(){
@@ -432,14 +437,15 @@ function toast(msg){
 /* ============================================================
    資料：載入 / 攤平
    ============================================================ */
-function buildFlat(raw){
+function buildFlat(raw,prefix){
+  prefix=prefix||"";
   const flat=[], byId={};
   let basic=0, advanced=0, units=0;
   (raw.parts||[]).forEach(p=>{
     (p.units||[]).forEach(u=>{
       units++;
       (u.words||[]).forEach(w=>{
-        const id = `${p.part}_${u.unit}_${w.no}_${w.word}`;
+        const id = `${prefix}${p.part}_${u.unit}_${w.no}_${w.word}`;
         // 優先採用 senses；若無則退回 word.pos / word.meaning
         let senses;
         if(Array.isArray(w.senses) && w.senses.length){
@@ -462,9 +468,9 @@ function buildFlat(raw){
   return {flat,byId,basic,advanced,units};
 }
 
-function loadData(raw){
+function loadData(raw,prefix){
   if(!raw || !Array.isArray(raw.parts)) throw new Error("找不到 parts 陣列");
-  const built=buildFlat(raw);
+  const built=buildFlat(raw,prefix||"");
   if(!built.flat.length) throw new Error("單字數為 0，請確認 JSON 內容");
   state.raw=raw;
   state.flat=built.flat;
@@ -474,6 +480,73 @@ function loadData(raw){
     total:built.flat.length, basic:built.basic, advanced:built.advanced, units:built.units
   };
 }
+
+/* ============================================================
+   書庫（多本教材）
+   - 每本書 meta：{id,name,levels,total,prefix,addedAt}
+   - prefix 讓各書的單字 ID 不互撞，進度因此各自獨立
+   - 預設/遷移而來的第一本書 prefix="" → 完整沿用既有進度
+   ============================================================ */
+function loadLibrary(){
+  try{ const l=JSON.parse(localStorage.getItem(LS.library)); if(Array.isArray(l)) state.library=l; }catch(e){}
+  return state.library;
+}
+function saveLibrary(){ try{ localStorage.setItem(LS.library,JSON.stringify(state.library)); }catch(e){ toast("⚠️ 書庫儲存失敗：localStorage 可能已滿"); } }
+function readBookRaw(id){ try{ const d=localStorage.getItem(bookKey(id)); return d?JSON.parse(d):null; }catch(e){ return null; } }
+function newBookId(){ return "b"+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+
+// 新增一本書到書庫並設為使用中；回傳 meta（失敗丟出錯誤）
+function addBook(raw){
+  // 先驗證可解析
+  if(!raw || !Array.isArray(raw.parts)) throw new Error("找不到 parts 陣列");
+  const probe=buildFlat(raw,"");
+  if(!probe.flat.length) throw new Error("單字數為 0，請確認 JSON 內容");
+  const id=newBookId();
+  const meta={ id, name:raw.source||"未命名教材", levels:raw.levels||"",
+               total:probe.flat.length, prefix:id+"__", addedAt:todayStr() };
+  try{ localStorage.setItem(bookKey(id),JSON.stringify(raw)); }
+  catch(e){ throw new Error("空間不足，無法儲存這本教材"); }
+  state.library.push(meta); saveLibrary();
+  activateBook(id,true);   // 新書：重設範圍為全部
+  return meta;
+}
+
+// 切換使用中的書本：載入其資料。resetScope=true 時把範圍重設為全部（避免指向不存在的單元）
+function activateBook(id,resetScope){
+  const meta=state.library.find(b=>b.id===id);
+  if(!meta) return false;
+  const raw=readBookRaw(id);
+  if(!raw){ toast("讀取教材失敗"); return false; }
+  loadData(raw, meta.prefix||"");
+  state.book=meta;
+  try{ localStorage.setItem(LS.curBook,id); }catch(e){}
+  if(resetScope){ state.scope={part:"all",unit:"all",special:null}; saveScope(); }
+  return true;
+}
+
+// 刪除一本書（可選一併清除該書的學習進度）
+function deleteBook(id,purgeProgress){
+  const meta=state.library.find(b=>b.id===id);
+  state.library=state.library.filter(b=>b.id!==id);
+  saveLibrary();
+  try{ localStorage.removeItem(bookKey(id)); }catch(e){}
+  if(purgeProgress && meta){
+    bookProgKeys(meta).forEach(k=>delete state.prog[k]); saveProg();
+  }
+  // 若刪到的是目前這本，切到剩下的第一本或回匯入頁
+  if(state.book && state.book.id===id){
+    state.book=null;
+    if(state.library.length){ activateBook(state.library[0].id,true); }
+    else { state.raw=null; state.flat=[]; state.byId={}; try{localStorage.removeItem(LS.curBook);}catch(e){} }
+  }
+}
+
+// 取得某本書在 prog 中的所有鍵（prefix="" 的預設書＝不含 "__" 的鍵）
+function bookProgKeys(meta){
+  const pre=meta?(meta.prefix||""):"";
+  return Object.keys(state.prog).filter(k=> pre ? k.indexOf(pre)===0 : k.indexOf("__")===-1);
+}
+function clearCurrentBookProg(){ bookProgKeys(state.book).forEach(k=>delete state.prog[k]); saveProg(); }
 
 /* ============================================================
    學習狀態（progress）
@@ -742,7 +815,7 @@ function renderNav(active){
   });
 }
 
-const navGroup={home:"home",flashcards:"flashcards",learn:"learn",
+const navGroup={home:"home",library:"home",flashcards:"flashcards",learn:"learn",
   testSetup:"testSetup",testScope:"testSetup",test:"testSetup",stats:"stats"};
 
 function go(view){
@@ -783,15 +856,15 @@ VIEWS.import=function(v){
         <div class="muted small">${esc(state.meta.levels)} · 共 ${state.meta.total} 個單字</div>
         <div class="grid2" style="margin-top:14px">
           <button class="btn primary" id="enter">進入學習</button>
-          <button class="btn ghost" id="reimport">重新匯入</button>
+          <button class="btn ghost" id="lib">管理書庫</button>
         </div>
       </div>`:""}
-    <p class="muted small center" style="margin-top:24px">資料只儲存在這台裝置（localStorage），不會上傳。</p>
+    <p class="muted small center" style="margin-top:24px">資料只儲存在這台裝置（localStorage），不會上傳。<br>可上傳多份教材，於書庫自由切換。</p>
   `;
   $("#dz").onclick=triggerFile;
   if(has){
     $("#enter").onclick=()=>go("home");
-    $("#reimport").onclick=()=>{ if(confirm("確定要清除目前資料並重新匯入？學習紀錄會保留。")) triggerFile(); };
+    $("#lib").onclick=()=>go("library");
   }
 };
 
@@ -804,12 +877,11 @@ document.getElementById("fileInput").addEventListener("change",function(e){
     let obj;
     try{ obj=JSON.parse(ev.target.result); }
     catch(err){ showImportError("JSON 格式錯誤：無法解析。"+err.message); resetFileInput(); return; }
-    try{ loadData(obj); }
+    let meta;
+    try{ meta=addBook(obj); }   // 加入書庫並設為使用中
     catch(err){ showImportError("資料結構錯誤："+err.message); resetFileInput(); return; }
-    try{ localStorage.setItem(LS.data,JSON.stringify(obj)); }
-    catch(err){ toast("⚠️ 資料較大，localStorage 儲存失敗，但本次仍可使用"); }
     resetFileInput();
-    toast("✅ 匯入成功，共 "+state.meta.total+" 個單字");
+    toast("✅ 已加入書庫："+meta.name+"（"+meta.total+" 字）");
     go("home"); // 匯入後自動進入首頁
   };
   reader.onerror=()=>{ showImportError("讀取檔案失敗。"); resetFileInput(); };
@@ -825,6 +897,43 @@ function showImportError(msg){
 }
 
 /* ============================================================
+   視圖：書庫（多本教材切換 / 新增 / 刪除）
+   ============================================================ */
+VIEWS.library=function(v){
+  const cur=state.book?state.book.id:null;
+  v.innerHTML=`
+    <div class="topbar"><button class="iconbtn" id="lbBack">←</button>
+      <h2 style="font-size:18px">書庫</h2><span style="width:42px"></span></div>
+    <button class="btn primary" id="lbAdd" style="margin-bottom:14px">＋ 新增教材（上傳 JSON）</button>
+    ${state.library.length ? state.library.map(b=>`
+      <div class="panel" style="border:2px solid ${b.id===cur?'var(--primary)':'transparent'}">
+        <div style="font-weight:800;font-size:16px;word-break:break-word">${esc(b.name)}</div>
+        <div class="muted small">${esc(b.levels||"")}${b.levels?" · ":""}${b.total} 字</div>
+        <div class="row" style="gap:8px;margin-top:12px">
+          ${b.id===cur
+            ? `<span class="badge familiar" style="align-self:center">使用中</span>`
+            : `<button class="btn sm primary" style="width:auto" data-use="${b.id}">使用這本</button>`}
+          <span class="grow"></span>
+          <button class="btn sm ghost danger" style="width:auto" data-del="${b.id}">刪除</button>
+        </div>
+      </div>`).join("")
+      : `<div class="empty"><div class="ico">📚</div>書庫是空的<br><span class="small">上傳一份 vocabulary.json 開始</span></div>`}
+    <p class="muted small center" style="margin-top:16px">每本教材的學習進度各自獨立保存。</p>`;
+  $("#lbBack").onclick=()=>go("home");
+  $("#lbAdd").onclick=triggerFile;
+  v.querySelectorAll("[data-use]").forEach(b=>b.onclick=()=>{
+    if(activateBook(b.dataset.use,true)){ toast("已切換："+state.book.name); go("home"); }
+  });
+  v.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
+    const meta=state.library.find(x=>x.id===b.dataset.del); if(!meta)return;
+    if(!confirm("刪除教材「"+meta.name+"」？單字資料會移除。"))return;
+    const purge=confirm("要連同這本的學習進度一起清除嗎？\n「確定」＝清除進度；「取消」＝保留（之後重新匯入同一本可復原）。");
+    deleteBook(b.dataset.del,purge);
+    if(!state.library.length) go("import"); else go("library");
+  });
+};
+
+/* ============================================================
    視圖：學習集首頁
    ============================================================ */
 VIEWS.home=function(v){
@@ -834,8 +943,12 @@ VIEWS.home=function(v){
   const first=words[0];
   v.innerHTML=`
     <div class="topbar">
-      <h2>核心字彙</h2>
-      <button class="iconbtn" data-go="settings">⚙️</button>
+      <div style="min-width:0"><h2>核心字彙</h2>
+        <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px">${esc(state.book?state.book.name:"")}</div></div>
+      <div class="row" style="gap:6px;flex:0 0 auto">
+        <button class="iconbtn" data-go="library">📚</button>
+        <button class="iconbtn" data-go="settings">⚙️</button>
+      </div>
     </div>
 
     <button class="panel" style="width:100%;text-align:left;border:none;color:var(--text);cursor:pointer" data-go="units">
@@ -1904,11 +2017,12 @@ VIEWS.settings=function(v){
 
     <div class="panel">
       <div style="font-weight:700;margin-bottom:10px">資料管理</div>
-      <button class="btn ghost" id="cfgReimport" style="margin-bottom:8px">重新匯入 vocabulary.json</button>
-      <button class="btn ghost" id="cfgClearProg" style="margin-bottom:8px">清除學習紀錄</button>
-      <button class="btn ghost" id="cfgClearWrong" style="margin-bottom:8px">清除錯字本</button>
-      <button class="btn ghost" id="cfgClearFav" style="margin-bottom:8px">清除收藏</button>
-      <button class="btn danger" id="cfgClearAll">清除全部資料（含單字）</button>
+      <button class="btn ghost" id="cfgLibrary" style="margin-bottom:8px">📚 我的書庫</button>
+      <button class="btn ghost" id="cfgReimport" style="margin-bottom:8px">＋ 新增教材到書庫</button>
+      <button class="btn ghost" id="cfgClearProg" style="margin-bottom:8px">清除本書學習紀錄</button>
+      <button class="btn ghost" id="cfgClearWrong" style="margin-bottom:8px">清除本書錯字本</button>
+      <button class="btn ghost" id="cfgClearFav" style="margin-bottom:8px">清除本書收藏</button>
+      <button class="btn danger" id="cfgClearAll">清除全部資料（含書庫所有教材）</button>
     </div>`;
   $("#cfgBack").onclick=()=>go("home");
 
@@ -1924,13 +2038,19 @@ VIEWS.settings=function(v){
     saveSettings();
   });
   $("#cfgTest").onclick=()=>speak("example");
+  $("#cfgLibrary").onclick=()=>go("library");
   $("#cfgReimport").onclick=()=>triggerFile();
-  $("#cfgClearProg").onclick=()=>{ if(confirm("清除所有學習紀錄（熟悉度、複習日期、答題次數）？收藏與錯字本一併清除。")){ state.prog={}; saveProg(); toast("已清除學習紀錄"); } };
-  $("#cfgClearWrong").onclick=()=>{ if(confirm("清除錯字本？")){ state.flat.forEach(w=>{getProg(w.id).inWrong=false;}); saveProg(); toast("已清除錯字本"); } };
-  $("#cfgClearFav").onclick=()=>{ if(confirm("清除所有收藏？")){ state.flat.forEach(w=>{getProg(w.id).fav=false;}); saveProg(); toast("已清除收藏"); } };
-  $("#cfgClearAll").onclick=()=>{ if(confirm("清除全部資料（含已匯入的單字與所有紀錄）？此動作無法復原。")){
-    try{localStorage.removeItem(LS.data);localStorage.removeItem(LS.prog);localStorage.removeItem(LS.settings);localStorage.removeItem(LS.scope);}catch(e){}
-    state.raw=null;state.flat=[];state.byId={};state.prog={};state.settings=defaultSettings();state.scope={part:"all",unit:"all",special:null};
+  $("#cfgClearProg").onclick=()=>{ if(confirm("清除「本書」所有學習紀錄（熟悉度、複習日期、答題次數）？收藏與錯字本一併清除。")){ clearCurrentBookProg(); toast("已清除本書學習紀錄"); } };
+  $("#cfgClearWrong").onclick=()=>{ if(confirm("清除本書錯字本？")){ state.flat.forEach(w=>{getProg(w.id).inWrong=false;}); saveProg(); toast("已清除錯字本"); } };
+  $("#cfgClearFav").onclick=()=>{ if(confirm("清除本書所有收藏？")){ state.flat.forEach(w=>{getProg(w.id).fav=false;}); saveProg(); toast("已清除收藏"); } };
+  $("#cfgClearAll").onclick=()=>{ if(confirm("清除全部資料（書庫所有教材、所有學習紀錄、設定）？此動作無法復原。")){
+    try{
+      state.library.forEach(b=>localStorage.removeItem(bookKey(b.id)));
+      localStorage.removeItem(LS.data);localStorage.removeItem(LS.prog);localStorage.removeItem(LS.settings);
+      localStorage.removeItem(LS.scope);localStorage.removeItem(LS.library);localStorage.removeItem(LS.curBook);
+    }catch(e){}
+    state.raw=null;state.flat=[];state.byId={};state.prog={};state.library=[];state.book=null;
+    state.settings=defaultSettings();state.scope={part:"all",unit:"all",special:null};
     go("import");
   } };
 };
@@ -1969,26 +2089,38 @@ async function boot(){
   // 學習紀錄
   try{ const p=JSON.parse(localStorage.getItem(LS.prog)); if(p&&typeof p==="object")state.prog=p; }catch(e){}
 
-  // 1) 優先：從同目錄自動載入 vocabulary.json（部署到 GitHub Pages 時訪客免上傳）
-  try{
-    const res=await fetch("./vocabulary.json",{cache:"no-cache"});
-    if(res.ok){
-      const raw=await res.json();
-      loadData(raw);
-      try{ localStorage.setItem(LS.data,JSON.stringify(raw)); }catch(e){} // 快取，供離線使用
-      go("home"); return;
-    }
-  }catch(e){ /* fetch 失敗（離線或 file://），改用快取 */ }
+  loadLibrary();
 
-  // 2) 後備：讀取 localStorage 既有快取
-  let raw=null;
-  try{ const d=localStorage.getItem(LS.data); if(d)raw=JSON.parse(d); }catch(e){}
-  if(raw){
-    try{ loadData(raw); go("home"); return; }
-    catch(e){ /* 資料毀損，導向匯入 */ }
+  // 1) 書庫已有教材 → 載入上次使用中的那本（保留範圍）
+  if(state.library.length){
+    let curId=null; try{ curId=localStorage.getItem(LS.curBook); }catch(e){}
+    const target=state.library.find(b=>b.id===curId)||state.library[0];
+    if(activateBook(target.id)){ go("home"); return; }
   }
 
-  // 3) 都沒有，顯示手動上傳畫面
+  // 2) 尚無書庫，但有舊版單本快取 → 自動遷移成第一本（prefix=""，完整保留既有進度）
+  let migrated=null;
+  try{ const d=localStorage.getItem(LS.data); if(d)migrated=JSON.parse(d); }catch(e){}
+  if(migrated && Array.isArray(migrated.parts)){
+    try{
+      const probe=buildFlat(migrated,"");
+      if(probe.flat.length){
+        const id=newBookId();
+        const meta={id,name:migrated.source||"核心字彙",levels:migrated.levels||"",total:probe.flat.length,prefix:"",addedAt:todayStr()};
+        localStorage.setItem(bookKey(id),JSON.stringify(migrated));
+        state.library=[meta]; saveLibrary();
+        if(activateBook(id)){ go("home"); return; }
+      }
+    }catch(e){ /* 遷移失敗則繼續往下 */ }
+  }
+
+  // 3) 全新使用者 → 嘗試自動抓同目錄 vocabulary.json 當第一本
+  try{
+    const res=await fetch("./vocabulary.json",{cache:"no-cache"});
+    if(res.ok){ addBook(await res.json()); go("home"); return; }
+  }catch(e){ /* 離線或 file://：略過 */ }
+
+  // 4) 什麼都沒有 → 匯入頁
   go("import");
 }
 boot();
