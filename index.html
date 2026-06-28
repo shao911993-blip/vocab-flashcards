@@ -422,13 +422,15 @@ const viewEl = () => document.getElementById("view");
 function esc(s){
   return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
-function todayStr(){
-  const d=new Date(); d.setHours(0,0,0,0);
-  return d.toISOString().slice(0,10);
+// 以「裝置本地時間」格式化 YYYY-MM-DD（避免 toISOString 的 UTC 造成日期差一天）
+function ymd(d){
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,"0"), day=String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
 }
+function todayStr(){ return ymd(new Date()); }
 function addDays(n){
   const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+n);
-  return d.toISOString().slice(0,10);
+  return ymd(d);
 }
 function shuffle(a){
   a=a.slice();
@@ -591,7 +593,7 @@ function logDaily(isNewWordToday){
 function currentStreak(){
   const has=d=>state.daily[d] && state.daily[d].actions>0;
   let c=new Date(); c.setHours(0,0,0,0);
-  const iso=dt=>dt.toISOString().slice(0,10);
+  const iso=dt=>ymd(dt);
   if(!has(iso(c))) c.setDate(c.getDate()-1);   // 今天還沒學，從昨天起算（連續仍有效）
   let n=0;
   while(has(iso(c))){ n++; c.setDate(c.getDate()-1); }
@@ -1092,7 +1094,7 @@ function streakBannerHtml(){
 function lastNDays(n){
   const arr=[]; const c=new Date(); c.setHours(0,0,0,0);
   for(let i=0;i<n;i++){
-    const d=c.toISOString().slice(0,10), rec=state.daily[d]||{};
+    const d=ymd(c), rec=state.daily[d]||{};
     arr.unshift({date:d, words:rec.words||0, actions:rec.actions||0});
     c.setDate(c.getDate()-1);
   }
@@ -1109,7 +1111,7 @@ function heatColor(n){
 function heatmapHtml(weeks){
   weeks=weeks||20;
   const today=new Date(); today.setHours(0,0,0,0);
-  const iso=dt=>dt.toISOString().slice(0,10);
+  const iso=dt=>ymd(dt);
   const cur=new Date(today);
   cur.setDate(cur.getDate() - today.getDay() - (weeks-1)*7);  // 對齊到 (weeks-1) 週前的週日
   let cols="";
