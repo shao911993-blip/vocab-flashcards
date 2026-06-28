@@ -743,7 +743,7 @@ function renderNav(active){
 }
 
 const navGroup={home:"home",flashcards:"flashcards",learn:"learn",
-  testSetup:"testSetup",test:"testSetup",stats:"stats"};
+  testSetup:"testSetup",testScope:"testSetup",test:"testSetup",stats:"stats"};
 
 function go(view){
   if(typeof stopAutoPlay==="function") stopAutoPlay();  // 換頁即停止自動播放與發音
@@ -1333,9 +1333,10 @@ function renderLearnDone(v){
   $("#eAgain").onclick=()=>go("learn");
 }
 
-/* 產生選擇題選項：1 正確 + 3 干擾 */
-function makeChoices(w,dir){
-  const pool=scopeWords().filter(x=>x.id!==w.id);
+/* 產生選擇題選項：1 正確 + 3 干擾（poolWords 預設為目前範圍） */
+function makeChoices(w,dir,poolWords){
+  const base=(poolWords&&poolWords.length)?poolWords:scopeWords();
+  const pool=base.filter(x=>x.id!==w.id);
   let distract=sample(pool,3);
   if(distract.length<3){ // 範圍不足，從全部補
     const extra=state.flat.filter(x=>x.id!==w.id && !distract.some(d=>d.id===x.id));
@@ -1347,12 +1348,46 @@ function makeChoices(w,dir){
 /* ============================================================
    視圖：測試設定
    ============================================================ */
-const testCfg={count:10,type:"choice",dir:"mix",instant:true,onlyWeak:false,onlyToday:false};
+const testCfg={count:10,type:"choice",dir:"mix",instant:true,onlyWeak:false,onlyToday:false,unitKeys:[]};
+
+// 取某 Part 的單元清單（含標題、字數、唯一 key）
+function unitsOf(part){
+  const seen=new Set(), out=[];
+  state.flat.filter(w=>w.part===part).forEach(w=>{
+    if(!seen.has(w.unit)){ seen.add(w.unit); out.push({unit:w.unit,key:part+"_"+w.unit,titleEn:w.titleEn,count:w.wordCount}); }
+  });
+  out.sort((a,b)=>a.unit-b.unit);
+  return out;
+}
+function partsList(){ return [...new Set(state.flat.map(w=>w.part))]; }
+// 把單元每 5 個分一組（每 5 回聯合測驗）
+function chunkUnits(part,size){
+  const us=unitsOf(part), groups=[];
+  for(let i=0;i<us.length;i+=size) groups.push(us.slice(i,i+size));
+  return groups;
+}
+// 測驗實際取用的單字池：有自選單元就用自選，否則用目前範圍
+function testPool(){
+  if(testCfg.unitKeys && testCfg.unitKeys.length){
+    const set=new Set(testCfg.unitKeys);
+    const arr=state.flat.filter(w=>set.has(w.part+"_"+w.unit));
+    if(arr.length) return arr;
+  }
+  return scopeWords();
+}
+function testScopeLabel(){
+  if(testCfg.unitKeys && testCfg.unitKeys.length) return `自選 ${testCfg.unitKeys.length} 單元 · ${testPool().length} 字`;
+  return scopeLabel()+"（目前範圍）";
+}
 VIEWS.testSetup=function(v){
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="tBack">←</button>
-      <div class="center"><h2 style="font-size:18px">測試設定</h2>
-      <div class="muted small">${esc(scopeLabel())}</div></div><span style="width:42px"></span></div>
+      <div class="center"><h2 style="font-size:18px">測試設定</h2></div><span style="width:42px"></span></div>
+
+    <button class="panel" style="width:100%;text-align:left;border:none;color:var(--text);cursor:pointer" id="tScope">
+      <div class="row spread"><span class="muted small">測驗範圍</span><span class="badge pos">選擇 ▸</span></div>
+      <div style="font-size:17px;font-weight:800;margin:6px 0 0">${esc(testScopeLabel())}</div>
+    </button>
 
     <div class="panel">
       <div class="muted small" style="margin-bottom:8px">題數</div>
@@ -1373,6 +1408,7 @@ VIEWS.testSetup=function(v){
     </div>
     <button class="btn primary" id="tStart">開始測試</button>`;
   $("#tBack").onclick=()=>go("home");
+  $("#tScope").onclick=()=>go("testScope");
   v.querySelectorAll("[data-cfg]").forEach(b=>b.onclick=()=>{
     let val=b.dataset.val;
     if(val==="true")val=true; else if(val==="false")val=false;
@@ -1391,11 +1427,108 @@ function cfgToggle(label,key){
 }
 
 /* ============================================================
+   視圖：測驗範圍選擇（可複選多個單元 + 每5回聯合）
+   ============================================================ */
+VIEWS.testScope=function(v){
+  const sel=new Set(testCfg.unitKeys||[]);
+  const parts=partsList();
+  const GROUP=5; // 每幾回一組
+
+  // 每 5 回聯合：各 Part 的分組按鈕
+  let presetHtml="";
+  parts.forEach(part=>{
+    const groups=chunkUnits(part,GROUP);
+    presetHtml+=`<div class="muted small" style="margin:10px 0 6px">${part}</div><div class="row wrap" style="gap:8px">`;
+    groups.forEach(g=>{
+      const keys=g.map(u=>u.key);
+      const on=keys.every(k=>sel.has(k));
+      presetHtml+=`<button class="chip ${on?'active':''}" data-preset="${keys.join(',')}">${part} ${g[0].unit}–${g[g.length-1].unit}</button>`;
+    });
+    presetHtml+=`</div>`;
+  });
+
+  // 自選單元清單（各 Part 可全選 / 清除）
+  let listHtml="";
+  parts.forEach(part=>{
+    const us=unitsOf(part);
+    const allOn=us.every(u=>sel.has(u.key));
+    listHtml+=`<div class="row spread" style="margin:16px 0 8px">
+      <span style="font-weight:700">${part}</span>
+      <span class="row" style="gap:6px">
+        <button class="btn sm ghost" style="width:auto" data-part-all="${part}">${allOn?'取消整':'全選'} ${part}</button>
+      </span></div>`;
+    us.forEach(u=>{
+      const on=sel.has(u.key);
+      listHtml+=`<button class="unit-row ${on?'active':''}" data-key="${u.key}" style="width:100%;text-align:left;color:var(--text)">
+        <div class="row spread">
+          <div><div class="u-no">Unit ${u.unit} ${on?'✓':''}</div>
+            <div class="u-title">${esc(u.titleEn)}</div>
+            <div class="muted small">${u.count} words</div></div>
+          <div style="font-size:20px">${on?'☑':'☐'}</div>
+        </div></button>`;
+    });
+  });
+
+  v.innerHTML=`
+    <div class="topbar"><button class="iconbtn" id="scBack">←</button>
+      <h2 style="font-size:18px">測驗範圍</h2><span style="width:42px"></span></div>
+
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:2px">每 5 回聯合測驗</div>
+      <div class="muted small">點一下即選取該組單元（會取代目前選擇）</div>
+      ${presetHtml}
+    </div>
+
+    <div class="row spread" style="margin:4px 2px 0">
+      <span style="font-weight:700">自選單元</span>
+      <button class="btn sm ghost" style="width:auto" id="scClear">清除全部</button>
+    </div>
+    ${listHtml}
+
+    <div style="height:84px"></div>
+    <div style="position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg) 30%);padding-top:14px;margin:0 -16px;padding-left:16px;padding-right:16px">
+      <div class="muted small center" style="margin-bottom:8px" id="scCount"></div>
+      <button class="btn primary" id="scApply">套用範圍</button>
+    </div>`;
+
+  const refreshCount=()=>{
+    const el=$("#scCount");
+    if(el) el.textContent = (testCfg.unitKeys&&testCfg.unitKeys.length)
+      ? `已選 ${testCfg.unitKeys.length} 單元 · ${testPool().length} 個單字`
+      : `未自選 → 將使用目前範圍（${esc(scopeLabel())}）`;
+  };
+  refreshCount();
+
+  $("#scBack").onclick=()=>go("testSetup");
+  $("#scApply").onclick=()=>go("testSetup");
+  $("#scClear").onclick=()=>{ testCfg.unitKeys=[]; go("testScope"); };
+
+  // 每5回 preset：取代選擇
+  v.querySelectorAll("[data-preset]").forEach(b=>b.onclick=()=>{
+    testCfg.unitKeys=b.dataset.preset.split(","); go("testScope");
+  });
+  // 整個 Part 全選 / 取消
+  v.querySelectorAll("[data-part-all]").forEach(b=>b.onclick=()=>{
+    const part=b.dataset.partAll; const keys=unitsOf(part).map(u=>u.key);
+    const cur=new Set(testCfg.unitKeys||[]);
+    const allOn=keys.every(k=>cur.has(k));
+    keys.forEach(k=>{ allOn?cur.delete(k):cur.add(k); });
+    testCfg.unitKeys=[...cur]; go("testScope");
+  });
+  // 單一單元切換
+  v.querySelectorAll("[data-key]").forEach(b=>b.onclick=()=>{
+    const cur=new Set(testCfg.unitKeys||[]);
+    cur.has(b.dataset.key)?cur.delete(b.dataset.key):cur.add(b.dataset.key);
+    testCfg.unitKeys=[...cur]; go("testScope");
+  });
+};
+
+/* ============================================================
    視圖：測試
    ============================================================ */
 const testState={qs:[],idx:0,correct:0,wrongList:[],answered:false};
 function startTest(){
-  let arr=scopeWords();
+  let arr=testPool();
   if(testCfg.onlyWeak) arr=arr.filter(w=>bucket(w.id)==="weak");
   if(testCfg.onlyToday) arr=arr.filter(w=>isDueToday(w.id));
   if(!arr.length){ toast("此條件下沒有可測單字"); return; }
@@ -1430,7 +1563,7 @@ VIEWS.test=function(v){
 };
 
 function renderChoiceQ(q){
-  const choices=makeChoices(q.w,q.dir);
+  const choices=makeChoices(q.w,q.dir,testPool());
   q._choices=choices;
   const prompt=q.dir==="en2zh"?esc(q.w.word):esc(meaningLine(q.w));
   return `<div class="muted small center">${q.dir==="en2zh"?"選出正確中文意思":"選出正確英文單字"}</div>
@@ -1443,7 +1576,7 @@ function renderTfQ(q){
   let shownMeaning;
   if(correct){ shownMeaning=meaningLine(q.w); }
   else{
-    const other=sample(scopeWords().filter(x=>x.id!==q.w.id),1)[0]||q.w;
+    const other=sample(testPool().filter(x=>x.id!==q.w.id),1)[0]||q.w;
     shownMeaning=meaningLine(other);
   }
   q._tfCorrect=correct;
