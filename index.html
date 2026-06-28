@@ -2031,14 +2031,11 @@ function matchPick(i,el,v){
   const prevEl=$(`#mGrid .mcard[data-i="${prevI}"]`);
   matchState.sel=null;
   if(prev.id===c.id && prev.type!==c.type){
-    // 配對成功：先縮小淡出，再真正從畫面移除（格子收合）
+    // 配對成功：縮小淡出後「保留空位」（不移除元素），其他卡片維持原位不移動
     matchState.done++;
     const allDone=matchState.done===matchState.pairs.length;
     [el,prevEl].forEach(x=>{ if(x){ x.classList.remove("sel"); x.classList.add("ok"); } });
-    setTimeout(()=>{
-      if(el)el.remove(); if(prevEl)prevEl.remove();
-      if(allDone) matchWin(v);
-    },300);
+    if(allDone) setTimeout(()=>matchWin(v),320);
   }else{
     // 配對失敗
     el.classList.add("sel","err"); prevEl.classList.add("err");
