@@ -374,7 +374,8 @@ const LS = {
   settings:"vocab_settings_v1",
   scope:   "vocab_scope_v1",
   library: "vocab_library_v1",     // 書庫目錄（書本 meta 陣列）
-  curBook: "vocab_curbook_v1"      // 目前使用中的書本 id
+  curBook: "vocab_curbook_v1",     // 目前使用中的書本 id
+  daily:   "vocab_daily_v1"        // 每日學習量紀錄（跨書本，養成習慣用）
 };
 function bookKey(id){ return "vocab_book_"+id; }   // 各書本 JSON 的儲存鍵
 
@@ -389,7 +390,8 @@ const state = {
   scope:{part:"all",unit:"all",special:null}, // special: null | 'fav' | 'wrong'
   view:"import",
   library:[],      // 書本 meta 陣列：{id,name,levels,total,prefix,addedAt}
-  book:null        // 目前使用中的書本 meta
+  book:null,       // 目前使用中的書本 meta
+  daily:{}         // 每日學習量：{ "YYYY-MM-DD": {actions, words} }
 };
 
 function defaultSettings(){
@@ -575,20 +577,56 @@ function saveProg(){
 function saveSettings(){ try{localStorage.setItem(LS.settings,JSON.stringify(state.settings));}catch(e){} }
 function saveScope(){ try{localStorage.setItem(LS.scope,JSON.stringify(state.scope));}catch(e){} }
 
+/* ---------- 每日學習量 / 連續天數（鼓勵養成習慣） ---------- */
+function saveDaily(){ try{ localStorage.setItem(LS.daily,JSON.stringify(state.daily)); }catch(e){} }
+// 記錄一次學習動作；isNewWordToday 代表這個字今天第一次學（用來算「今天學了幾個字」）
+function logDaily(isNewWordToday){
+  const d=todayStr();
+  if(!state.daily[d]) state.daily[d]={actions:0,words:0};
+  state.daily[d].actions++;
+  if(isNewWordToday) state.daily[d].words++;
+  saveDaily();
+}
+// 目前連續天數：從今天（若今天已學）或昨天往回數連續有學習的天數
+function currentStreak(){
+  const has=d=>state.daily[d] && state.daily[d].actions>0;
+  let c=new Date(); c.setHours(0,0,0,0);
+  const iso=dt=>dt.toISOString().slice(0,10);
+  if(!has(iso(c))) c.setDate(c.getDate()-1);   // 今天還沒學，從昨天起算（連續仍有效）
+  let n=0;
+  while(has(iso(c))){ n++; c.setDate(c.getDate()-1); }
+  return n;
+}
+// 最長連續天數
+function longestStreak(){
+  const days=Object.keys(state.daily).filter(d=>state.daily[d].actions>0).sort();
+  let best=0,run=0,prev=null;
+  days.forEach(d=>{
+    if(prev){
+      const diff=(new Date(d)-new Date(prev))/86400000;
+      run = diff===1 ? run+1 : 1;
+    }else run=1;
+    if(run>best)best=run; prev=d;
+  });
+  return best;
+}
+
 /* 套用熟悉度（單字卡三按鈕） */
 function setFamiliarity(id,level){ // level: weak/normal/familiar
   const p=getProg(id);
+  const isNew=p.last!==todayStr();   // 今天第一次學這個字？
   p.seen++; p.last=todayStr();
   if(level==="weak"){ p.status="weak"; p.streak=0; p.next=addDays(1); }
   else if(level==="normal"){ p.status="normal"; p.next=addDays(3); }
   else if(level==="familiar"){
     p.streak++; p.status = p.streak>=2 ? "mastered" : "familiar"; p.next=addDays(7);
   }
-  saveProg();
+  saveProg(); logDaily(isNew);
 }
 /* 測驗 / 學習答題後更新 */
 function recordAnswer(id,correct){
   const p=getProg(id);
+  const isNew=p.last!==todayStr();   // 今天第一次學這個字？
   p.seen++; p.last=todayStr();
   if(correct){
     p.correct++; p.streak++;
@@ -597,7 +635,7 @@ function recordAnswer(id,correct){
   }else{
     p.wrong++; p.streak=0; p.status="weak"; p.next=addDays(1); p.inWrong=true;
   }
-  saveProg();
+  saveProg(); logDaily(isNew);
 }
 
 /* 狀態歸類（顯示用） */
@@ -824,7 +862,7 @@ function renderNav(active){
   });
 }
 
-const navGroup={home:"home",library:"home",flashcards:"flashcards",learn:"learn",
+const navGroup={home:"home",library:"home",progress:"home",flashcards:"flashcards",learn:"learn",
   testSetup:"testSetup",testScope:"testSetup",test:"testSetup",stats:"stats"};
 
 function go(view){
@@ -960,6 +998,8 @@ VIEWS.home=function(v){
       </div>
     </div>
 
+    ${streakBannerHtml()}
+
     <button class="panel" style="width:100%;text-align:left;border:none;color:var(--text);cursor:pointer" data-go="units">
       <div class="row spread">
         <span class="muted small">目前範圍</span><span class="badge pos">更換 ▸</span>
@@ -1030,6 +1070,86 @@ function progressBar(c,total){
     <span class="seg-new" style="width:${pct(c.new)}"></span>
   </div>`;
 }
+
+/* 首頁的連續學習橫幅（點擊進入學習紀錄） */
+function streakBannerHtml(){
+  const s=currentStreak();
+  const today=state.daily[todayStr()]||{words:0,actions:0};
+  const msg = s>0 ? `連續學習 ${s} 天` : "今天開始學習吧 💪";
+  return `<button class="panel" style="width:100%;text-align:left;border:none;cursor:pointer;background:linear-gradient(135deg,#3a2d7a,#6a48f0);color:#fff" data-go="progress">
+    <div class="row spread">
+      <div class="row" style="gap:12px">
+        <span style="font-size:30px">🔥</span>
+        <div><div style="font-weight:800;font-size:18px">${msg}</div>
+          <div class="small" style="opacity:.85">今天已學 ${today.words} 個單字</div></div>
+      </div>
+      <span class="badge" style="background:rgba(255,255,255,.22);color:#fff">紀錄 ▸</span>
+    </div>
+  </button>`;
+}
+
+/* 取最近 n 天的每日學習量（由舊到新） */
+function lastNDays(n){
+  const arr=[]; const c=new Date(); c.setHours(0,0,0,0);
+  for(let i=0;i<n;i++){
+    const d=c.toISOString().slice(0,10), rec=state.daily[d]||{};
+    arr.unshift({date:d, words:rec.words||0, actions:rec.actions||0});
+    c.setDate(c.getDate()-1);
+  }
+  return arr;
+}
+
+/* ============================================================
+   視圖：學習紀錄（連續天數 / 每日學習量）
+   ============================================================ */
+VIEWS.progress=function(v){
+  const streak=currentStreak();
+  const longest=longestStreak();
+  const activeDays=Object.keys(state.daily).filter(d=>state.daily[d].actions>0).length;
+  const today=state.daily[todayStr()]||{words:0,actions:0};
+  const totalWords=Object.values(state.daily).reduce((s,r)=>s+(r.words||0),0);
+  const days=lastNDays(14);
+  const maxW=Math.max(1,...days.map(d=>d.words));
+  const cheer = streak>=7 ? "太強了，已經一週以上！👑"
+              : streak>=3 ? "保持住，習慣正在養成 🌱"
+              : streak>=1 ? "好的開始，明天再來 💪"
+              : "今天學一點，就會開始累積 🔥";
+
+  const bars = days.map(d=>{
+    const h=Math.round(d.words/maxW*100);
+    const dim=new Date(d.date), isToday=d.date===todayStr();
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end">
+      <div style="font-size:10px;color:var(--muted);height:12px">${d.words||""}</div>
+      <div style="width:70%;border-radius:5px;height:${Math.max(4,h)}%;background:${d.words?(isToday?'var(--warning)':'var(--primary)'):'#222a52'}"></div>
+      <div style="font-size:9px;color:${isToday?'var(--warning)':'var(--muted)'}">${dim.getMonth()+1}/${dim.getDate()}</div>
+    </div>`;
+  }).join("");
+
+  v.innerHTML=`
+    <div class="topbar"><button class="iconbtn" id="pgBack">←</button><h2>學習紀錄</h2><span style="width:42px"></span></div>
+
+    <div class="panel center" style="background:linear-gradient(135deg,#3a2d7a,#6a48f0);color:#fff">
+      <div style="font-size:44px">🔥</div>
+      <div style="font-size:40px;font-weight:800;line-height:1.1">${streak} 天</div>
+      <div style="opacity:.9">目前連續學習</div>
+      <div class="small" style="opacity:.85;margin-top:8px">${cheer}</div>
+    </div>
+
+    <div class="stat-grid">
+      ${statCell(today.words,"今天學了","var(--warning)")}
+      ${statCell(longest,"最長連續","var(--familiar)")}
+      ${statCell(activeDays,"累計學習天數")}
+      ${statCell(totalWords,"累計學習字次")}
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="row spread" style="margin-bottom:10px"><b>最近 14 天</b><span class="muted small">每日學習單字數</span></div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:140px">${bars}</div>
+    </div>
+
+    <p class="muted small center">每天只要有學（單字卡標記、學習或測驗答題）就會記錄，跨教材一起累積。</p>`;
+  $("#pgBack").onclick=()=>go("home");
+};
 
 /* ============================================================
    視圖：Unit 選擇
@@ -2057,8 +2177,9 @@ VIEWS.settings=function(v){
       state.library.forEach(b=>localStorage.removeItem(bookKey(b.id)));
       localStorage.removeItem(LS.data);localStorage.removeItem(LS.prog);localStorage.removeItem(LS.settings);
       localStorage.removeItem(LS.scope);localStorage.removeItem(LS.library);localStorage.removeItem(LS.curBook);
+      localStorage.removeItem(LS.daily);
     }catch(e){}
-    state.raw=null;state.flat=[];state.byId={};state.prog={};state.library=[];state.book=null;
+    state.raw=null;state.flat=[];state.byId={};state.prog={};state.library=[];state.book=null;state.daily={};
     state.settings=defaultSettings();state.scope={part:"all",unit:"all",special:null};
     go("import");
   } };
@@ -2097,6 +2218,8 @@ async function boot(){
   try{ const sc=JSON.parse(localStorage.getItem(LS.scope)); if(sc)Object.assign(state.scope,sc); }catch(e){}
   // 學習紀錄
   try{ const p=JSON.parse(localStorage.getItem(LS.prog)); if(p&&typeof p==="object")state.prog=p; }catch(e){}
+  // 每日學習量
+  try{ const dd=JSON.parse(localStorage.getItem(LS.daily)); if(dd&&typeof dd==="object")state.daily=dd; }catch(e){}
 
   loadLibrary();
 
