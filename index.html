@@ -1026,7 +1026,7 @@ function progressBar(c,total){
    視圖：Unit 選擇
    ============================================================ */
 VIEWS.units=function(v){
-  const parts=["all","Basic","Advanced"];
+  const parts=["all",...partsList()];   // 由資料動態產生 Part（不再寫死 Basic/Advanced）
   let html=`
     <div class="topbar">
       <button class="iconbtn" data-back>←</button>
@@ -1950,9 +1950,15 @@ VIEWS.stats=function(v){
   const due=all.filter(w=>isDueToday(w.id)).length;
   const favN=all.filter(w=>getProg(w.id).fav).length;
   const wrongN=all.filter(w=>getProg(w.id).inWrong).length;
-  const basic=all.filter(w=>w.part==="Basic");
-  const adv=all.filter(w=>w.part==="Advanced");
-  const bC=progressCounts(basic), aC=progressCounts(adv);
+  // 各 Part 進度（依資料動態產生，支援任何教材的 Part 名稱）
+  const partBars=partsList().map(part=>{
+    const arr=all.filter(w=>w.part===part);
+    const c=progressCounts(arr);
+    return `<div class="panel">
+      <div class="row spread" style="margin-bottom:6px"><b>${esc(part)} 進度</b><span class="muted small">${c.familiar+c.normal}/${arr.length} 已學</span></div>
+      ${progressBar(c,arr.length)}
+    </div>`;
+  }).join("");
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="stBack">←</button><h2>統計</h2><span style="width:42px"></span></div>
     <div class="stat-grid">
@@ -1967,14 +1973,8 @@ VIEWS.stats=function(v){
       ${statCell(favN,"收藏","var(--warning)")}
       ${statCell(wrongN,"錯字本","var(--danger)")}
     </div>
-    <div class="panel" style="margin-top:14px">
-      <div class="row spread" style="margin-bottom:6px"><b>Basic 進度</b><span class="muted small">${bC.familiar+bC.normal}/${basic.length} 已學</span></div>
-      ${progressBar(bC,basic.length)}
-    </div>
-    <div class="panel">
-      <div class="row spread" style="margin-bottom:6px"><b>Advanced 進度</b><span class="muted small">${aC.familiar+aC.normal}/${adv.length} 已學</span></div>
-      ${progressBar(aC,adv.length)}
-    </div>
+    <div style="height:14px"></div>
+    ${partBars}
     <div class="panel">
       <div class="row spread" style="margin-bottom:6px"><b>目前範圍進度</b><span class="muted small">${esc(scopeLabel())}</span></div>
       ${progressBar(progressCounts(scope),scope.length)}
@@ -1997,7 +1997,7 @@ VIEWS.settings=function(v){
       <div class="muted small" style="margin-bottom:6px">資料來源</div>
       <div style="font-weight:700">${esc(state.meta.source||"—")}</div>
       <div class="muted small">${esc(state.meta.levels||"")} · 共 ${state.meta.total} 個單字</div>
-      <div class="muted small">Basic ${state.meta.basic} · Advanced ${state.meta.advanced} · ${state.meta.units} 個 Unit</div>
+      <div class="muted small">${partsList().length} 個 Part · ${state.meta.units} 個 Unit</div>
     </div>
 
     <div class="panel">
