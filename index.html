@@ -278,7 +278,7 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:.3px;}
 .mcard.en{font-size:clamp(14px,4.2vw,18px);}
 .mcard.zh{font-size:clamp(12px,3.4vw,15px);color:#d6dcf0;}
 .mcard.sel{border-color:var(--primary);background:#23284d;}
-.mcard.ok{background:rgba(52,211,153,.18);border-color:var(--success);opacity:0;pointer-events:none;transition:.35s;}
+.mcard.ok{background:rgba(52,211,153,.25);border-color:var(--success);opacity:0;transform:scale(.55);pointer-events:none;transition:.3s;}
 .mcard.err{animation:shake .35s;border-color:var(--danger);}
 @keyframes shake{0%,100%{transform:translateX(0);}25%{transform:translateX(-7px);}75%{transform:translateX(7px);}}
 
@@ -1982,7 +1982,7 @@ const matchState={pairs:[],cards:[],sel:null,start:0,timer:null,done:0};
 VIEWS.match=function(v){
   const words=scopeWords();
   if(words.length<2){ v.innerHTML=simpleEmpty("配對","這個範圍單字太少（至少 2 個）"); $("#eBack").onclick=()=>go("home"); return; }
-  const n=Math.min(words.length>=8?8:words.length>=6?6:words.length, 8);
+  const n=Math.min(6, words.length);   // 固定最多 6 個單字（12 張卡），避免爆版
   const picked=sample(words,n);
   matchState.pairs=picked;
   let cards=[];
@@ -2004,7 +2004,7 @@ function startMatchTimer(){
   },100);
 }
 function renderMatch(v){
-  const cols=matchState.cards.length<=8?2:3;
+  const cols=2;   // 固定 2 欄，中文意思較長也讀得清楚、不爆版
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="eBack">←</button>
       <div class="center"><h2 style="font-size:18px">配對</h2><div class="muted small" id="mTime">0.0s</div></div>
@@ -2031,11 +2031,14 @@ function matchPick(i,el,v){
   const prevEl=$(`#mGrid .mcard[data-i="${prevI}"]`);
   matchState.sel=null;
   if(prev.id===c.id && prev.type!==c.type){
-    // 配對成功
-    el.classList.add("ok"); prevEl.classList.add("ok");
-    el.classList.remove("sel"); prevEl.classList.remove("sel");
+    // 配對成功：先縮小淡出，再真正從畫面移除（格子收合）
     matchState.done++;
-    if(matchState.done===matchState.pairs.length) matchWin(v);
+    const allDone=matchState.done===matchState.pairs.length;
+    [el,prevEl].forEach(x=>{ if(x){ x.classList.remove("sel"); x.classList.add("ok"); } });
+    setTimeout(()=>{
+      if(el)el.remove(); if(prevEl)prevEl.remove();
+      if(allDone) matchWin(v);
+    },300);
   }else{
     // 配對失敗
     el.classList.add("sel","err"); prevEl.classList.add("err");
@@ -2057,7 +2060,7 @@ function matchWin(v){
         <button class="btn primary" id="mAgain" style="margin-top:14px">再玩一次</button>
       </div>`);
     const a=$("#mAgain"); if(a)a.onclick=()=>go("match");
-  },380);
+  },120);
 }
 
 /* ============================================================
