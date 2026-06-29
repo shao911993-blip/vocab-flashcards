@@ -626,19 +626,27 @@ function setFamiliarity(id,level){ // level: weak/normal/familiar
   }
   saveProg(); logDaily(isNew);
 }
-/* 測驗 / 學習答題後更新 */
-function recordAnswer(id,correct){
+/* 答對更新（mastered=true 代表通過學習闖關，直接標記為熟） */
+function recordCorrect(id,mastered){
   const p=getProg(id);
-  const isNew=p.last!==todayStr();   // 今天第一次學這個字？
-  p.seen++; p.last=todayStr();
-  if(correct){
-    p.correct++; p.streak++;
-    if(p.streak>=2){ p.status="mastered"; p.next=addDays(7); }
-    else { p.status="normal"; p.next=addDays(3); }
-  }else{
-    p.wrong++; p.streak=0; p.status="weak"; p.next=addDays(1); p.inWrong=true;
-  }
+  const isNew=p.last!==todayStr();
+  p.seen++; p.last=todayStr(); p.correct++; p.streak++;
+  if(mastered){ p.status="mastered"; p.next=addDays(7); }
+  else if(p.streak>=2){ p.status="familiar"; p.next=addDays(7); }
+  else { p.status="normal"; p.next=addDays(3); }
   saveProg(); logDaily(isNew);
+}
+/* 答錯更新：錯一次不會立刻變不熟；累計錯 2 次以上才標記不熟並進錯字本 */
+function recordWrong(id){
+  const p=getProg(id);
+  const isNew=p.last!==todayStr();
+  p.seen++; p.last=todayStr(); p.wrong++; p.streak=0;
+  if(p.wrong>=2){ p.status="weak"; p.inWrong=true; p.next=addDays(1); }
+  else { if(p.status==="mastered"||p.status==="familiar") p.status="normal"; p.next=addDays(1); }
+  saveProg(); logDaily(isNew);
+}
+/* 測驗用：對 / 錯 */
+function recordAnswer(id,correct){ correct ? recordCorrect(id,false) : recordWrong(id);
 }
 
 /* 狀態歸類（顯示用） */
@@ -1597,69 +1605,127 @@ function toggleFav(id){ const p=getProg(id); p.fav=!p.fav; saveProg(); toast(p.f
 /* ============================================================
    視圖：學習模式（Learn）
    ============================================================ */
-const learnState={queue:[],idx:0,answered:false,round:0,correct:0};
+const learnState={queue:[],round:{},total:0,mastered:0,cur:null,curWord:null,curChoices:null,answered:false};
+const LEARN_TYPES=["en2zh","zh2en","written"];   // 看英文選中文 / 看中文選英文 / 默寫英文
+const LEARN_ROUND=8;                              // 每輪最多單字數（每字要過 3 關）
+
 VIEWS.learn=function(v){
   const words=scopeWords();
   if(words.length<1){ v.innerHTML=simpleEmpty("學習","這個範圍沒有單字"); $("#eBack").onclick=()=>go("home"); return; }
-  // 優先：今日複習 > 不熟 > 未學 > 其他
-  const due=words.filter(w=>isDueToday(w.id));
-  const weak=words.filter(w=>bucket(w.id)==="weak"&&!isDueToday(w.id));
-  const fresh=words.filter(w=>bucket(w.id)==="new"&&!isDueToday(w.id)&&bucket(w.id)!=="weak");
-  const rest=words.filter(w=>!due.includes(w)&&!weak.includes(w)&&!fresh.includes(w));
-  let q=[...due,...weak,...fresh,...rest];
-  q=q.slice(0,Math.min(q.length,20));
-  learnState.queue=q; learnState.idx=0; learnState.answered=false; learnState.correct=0;
+  // 優先學「還沒精熟」的：今日複習 > 不熟 > 未學 > 其他；已精熟的最後才補
+  const notMastered=words.filter(w=>getProg(w.id).status!=="mastered");
+  const pool=notMastered.length?notMastered:words;
+  const due=pool.filter(w=>isDueToday(w.id));
+  const weak=pool.filter(w=>bucket(w.id)==="weak"&&!due.includes(w));
+  const fresh=pool.filter(w=>bucket(w.id)==="new"&&!due.includes(w)&&!weak.includes(w));
+  const rest=pool.filter(w=>!due.includes(w)&&!weak.includes(w)&&!fresh.includes(w));
+  const pick=[...due,...weak,...fresh,...rest].slice(0,Math.min(LEARN_ROUND,pool.length));
+
+  // 建立「整輪打散」的題目佇列：每字 3 關，分 3 層、每層各字出現一次、題型在層內混合
+  learnState.round={}; const perm={};
+  pick.forEach(w=>{ learnState.round[w.id]=new Set(); perm[w.id]=shuffle(LEARN_TYPES.slice()); });
+  let tasks=[];
+  for(let layer=0;layer<3;layer++){ shuffle(pick.slice()).forEach(w=>tasks.push({id:w.id,type:perm[w.id][layer]})); }
+  learnState.queue=tasks; learnState.total=pick.length; learnState.mastered=0; learnState.answered=false;
   renderLearn(v);
 };
+
 function renderLearn(v){
-  if(learnState.idx>=learnState.queue.length){ return renderLearnDone(v); }
-  const w=learnState.queue[learnState.idx];
-  const dir=Math.random()<0.5?"en2zh":"zh2en"; // 看英文選中文 / 看中文選英文
-  learnState.curDir=dir;
-  const choices=makeChoices(w,dir);
-  learnState.curChoices=choices;
-  const prompt = dir==="en2zh"?esc(w.word):esc(meaningLine(w));
+  if(!learnState.queue.length){ return renderLearnDone(v); }
+  const task=learnState.queue[0];
+  const w=state.byId[task.id];
+  learnState.cur=task; learnState.curWord=w; learnState.answered=false;
+  const pct=learnState.total?Math.round(learnState.mastered/learnState.total*100):0;
+  const tip = task.type==="en2zh"?"請選出正確的中文意思"
+            : task.type==="zh2en"?"請選出正確的英文單字"
+            : "看中文，默寫出英文";
+  let body;
+  if(task.type==="written"){
+    body=`<div class="q-prompt">${esc(meaningLine(w))}</div>
+      <input class="search" id="eInput" placeholder="輸入英文，按 Enter 送出" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="btn primary" id="eSubmit" style="margin-top:6px">送出</button>`;
+  }else{
+    const choices=makeChoices(w,task.type,scopeWords());
+    learnState.curChoices=choices;
+    const prompt = task.type==="en2zh"?esc(w.word):esc(meaningLine(w));
+    body=`<div class="q-prompt">${prompt}</div>
+      <div id="eOpts">${choices.map((c,i)=>`<button class="opt" data-i="${i}">${esc(task.type==="en2zh"?meaningLine(c):c.word)}</button>`).join("")}</div>`;
+  }
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="eBack">←</button>
       <div class="center"><h2 style="font-size:18px">學習模式</h2>
-      <div class="muted small">${learnState.idx+1} / ${learnState.queue.length}</div></div>
+      <div class="muted small">精熟 ${learnState.mastered} / ${learnState.total}</div></div>
       <button class="iconbtn" id="ePlay">🔊</button></div>
-    <div class="bar" style="margin-bottom:6px"><span class="seg-familiar" style="width:${(learnState.idx/learnState.queue.length*100).toFixed(1)}%"></span></div>
-    <div class="muted small center" style="margin-bottom:4px">${dir==="en2zh"?"請選出正確的中文意思":"請選出正確的英文單字"}</div>
-    <div class="q-prompt">${prompt}</div>
-    <div id="eOpts">
-      ${choices.map((c,i)=>`<button class="opt" data-i="${i}">${esc(dir==="en2zh"?meaningLine(c):c.word)}</button>`).join("")}
-    </div>`;
+    <div class="bar" style="margin-bottom:6px"><span class="seg-familiar" style="width:${pct}%"></span></div>
+    <div class="muted small center" style="margin-bottom:4px">${tip}</div>
+    ${body}`;
   $("#eBack").onclick=()=>go("home");
   $("#ePlay").onclick=()=>speak(w.word);
-  v.querySelectorAll("#eOpts .opt").forEach(b=>b.onclick=()=>learnAnswer(Number(b.dataset.i),v));
-};
-function learnAnswer(i,v){
-  const w=learnState.queue[learnState.idx];
-  const chosen=learnState.curChoices[i];
-  const correct=chosen.id===w.id;
-  recordAnswer(w.id,correct);
-  if(correct)learnState.correct++;
-  v.querySelectorAll("#eOpts .opt").forEach((b,bi)=>{
-    b.disabled=true;
-    const c=learnState.curChoices[bi];
-    if(c.id===w.id)b.classList.add("correct");
-    else if(bi===i)b.classList.add("wrong");
-    else b.classList.add("dim");
-  });
-  const opts=$("#eOpts");
-  opts.insertAdjacentHTML("beforeend",
-    `<button class="btn primary" id="eNext" style="margin-top:8px">${correct?"答對！下一題 ›":"正確答案：" + esc(learnState.curDir==="en2zh"?meaningLine(w):w.word)+" · 下一題 ›"}</button>`);
-  $("#eNext").onclick=()=>{ learnState.idx++; renderLearn(v); };
+  if(task.type==="written"){
+    const inp=$("#eInput"), btn=$("#eSubmit");
+    const submit=()=>{
+      if(learnState.answered)return;
+      if(normWord(inp.value)===""){ toast("請先輸入答案"); inp.focus(); return; }  // 空白不送出
+      learnResult(normWord(inp.value)===normWord(w.word),v,{written:true,typed:inp.value});
+    };
+    btn.onclick=submit;
+    inp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); submit(); } });
+    setTimeout(()=>inp.focus(),50);
+  }else{
+    v.querySelectorAll("#eOpts .opt").forEach(b=>b.onclick=()=>{
+      if(learnState.answered)return;
+      const c=learnState.curChoices[Number(b.dataset.i)];
+      learnResult(c.id===w.id,v,{idx:Number(b.dataset.i)});
+    });
+  }
 }
+
+function learnResult(correct,v,info){
+  learnState.answered=true;
+  const task=learnState.queue.shift();
+  const w=learnState.curWord;
+  let masteredNow=false;
+  if(correct){
+    const set=learnState.round[task.id]; set.add(task.type);
+    masteredNow = set.size===LEARN_TYPES.length;
+    recordCorrect(task.id, masteredNow);
+    if(masteredNow) learnState.mastered++;
+  }else{
+    recordWrong(task.id);
+    learnState.queue.splice(Math.min(learnState.queue.length,3),0,task);  // 答錯：稍後再考一次（不算不熟）
+  }
+  // 視覺回饋
+  if(info.written){
+    const inp=$("#eInput"); if(inp)inp.disabled=true;
+    const btn=$("#eSubmit"); if(btn)btn.disabled=true;
+  }else{
+    v.querySelectorAll("#eOpts .opt").forEach((b,bi)=>{
+      b.disabled=true; const c=learnState.curChoices[bi];
+      if(c.id===w.id)b.classList.add("correct");
+      else if(bi===info.idx)b.classList.add("wrong");
+      else b.classList.add("dim");
+    });
+  }
+  const ansText = task.type==="en2zh"?meaningLine(w):w.word;
+  const fb=document.createElement("div"); fb.style.marginTop="14px";
+  fb.innerHTML=`
+    <div class="panel" style="border:1px solid ${correct?'var(--success)':'var(--danger)'}">
+      <div style="font-weight:800;color:${correct?'var(--success)':'var(--danger)'}">${correct?(masteredNow?"✓ 答對，這個字精熟了 🎉":"✓ 答對"):"✗ 答錯，等一下再考一次"}</div>
+      ${correct?"":`<div class="small" style="margin-top:6px">正確答案：<b>${esc(ansText)}</b></div>`}
+    </div>
+    <button class="btn primary" id="eNext" style="margin-top:10px">${learnState.queue.length?"下一題 ›":"看結果"}</button>`;
+  v.appendChild(fb);
+  $("#eNext").onclick=()=>renderLearn(v);
+}
+
 function renderLearnDone(v){
-  const total=learnState.queue.length;
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="eBack">←</button><h2>學習完成</h2><span style="width:42px"></span></div>
     <div class="panel center" style="background:var(--cardGrad)">
       <div style="font-size:40px">🎉</div>
       <div style="font-size:22px;font-weight:800;margin:8px 0">本輪完成</div>
-      <div class="muted">答對 ${learnState.correct} / ${total}</div>
+      <div class="muted">精熟 ${learnState.mastered} / ${learnState.total} 個單字</div>
+      <div class="muted small" style="margin-top:6px">（每字需通過：選中文、選英文、默寫英文）</div>
     </div>
     <button class="btn primary" id="eAgain" style="margin-bottom:10px">再來一輪</button>
     <button class="btn ghost" id="eHome">回首頁</button>`;
@@ -1948,6 +2014,7 @@ function bindTestQ(q,v){
     const inp=$("#qInput"), btn=$("#qSubmit");
     const submit=()=>{
       if(testState.answered)return;
+      if(normWord(inp.value)===""){ toast("請先輸入答案"); inp.focus(); return; }  // 空白不送出，避免誤觸
       const ok=normWord(inp.value)===normWord(q.w.word);
       finishTestQ(q,ok,v,{type:"written",typed:inp.value});
     };
