@@ -1605,28 +1605,36 @@ function toggleFav(id){ const p=getProg(id); p.fav=!p.fav; saveProg(); toast(p.f
 /* ============================================================
    視圖：學習模式（Learn）
    ============================================================ */
-const learnState={queue:[],round:{},total:0,mastered:0,cur:null,curWord:null,curChoices:null,answered:false};
+const learnState={queue:[],pending:[],round:{},total:0,mastered:0,cur:null,curWord:null,curChoices:null,answered:false};
 const LEARN_TYPES=["en2zh","zh2en","written"];   // 看英文選中文 / 看中文選英文 / 默寫英文
-const LEARN_ROUND=8;                              // 每輪最多單字數（每字要過 3 關）
+const LEARN_BATCH=7;                              // 同時進行中的單字數（精熟一個就補一個新的進來）
+
+// 把若干單字的 3 關題目隨機散佈進佇列（整輪打散）
+function learnEnqueue(words){
+  words.forEach(w=>{
+    if(!learnState.round[w.id]) learnState.round[w.id]=new Set();
+    shuffle(LEARN_TYPES.slice()).forEach(t=>{
+      const pos=Math.floor(Math.random()*(learnState.queue.length+1));
+      learnState.queue.splice(pos,0,{id:w.id,type:t});
+    });
+  });
+}
 
 VIEWS.learn=function(v){
   const words=scopeWords();
   if(words.length<1){ v.innerHTML=simpleEmpty("學習","這個範圍沒有單字"); $("#eBack").onclick=()=>go("home"); return; }
-  // 優先學「還沒精熟」的：今日複習 > 不熟 > 未學 > 其他；已精熟的最後才補
+  // 目標＝整個範圍裡「還沒精熟」的字（全部，不再只取 8 個）；已全精熟則重練全部
   const notMastered=words.filter(w=>getProg(w.id).status!=="mastered");
-  const pool=notMastered.length?notMastered:words;
+  const pool=notMastered.length?notMastered:words.slice();
   const due=pool.filter(w=>isDueToday(w.id));
   const weak=pool.filter(w=>bucket(w.id)==="weak"&&!due.includes(w));
   const fresh=pool.filter(w=>bucket(w.id)==="new"&&!due.includes(w)&&!weak.includes(w));
   const rest=pool.filter(w=>!due.includes(w)&&!weak.includes(w)&&!fresh.includes(w));
-  const pick=[...due,...weak,...fresh,...rest].slice(0,Math.min(LEARN_ROUND,pool.length));
+  const target=[...due,...weak,...fresh,...rest];   // 這次要帶完的全部單字
 
-  // 建立「整輪打散」的題目佇列：每字 3 關，分 3 層、每層各字出現一次、題型在層內混合
-  learnState.round={}; const perm={};
-  pick.forEach(w=>{ learnState.round[w.id]=new Set(); perm[w.id]=shuffle(LEARN_TYPES.slice()); });
-  let tasks=[];
-  for(let layer=0;layer<3;layer++){ shuffle(pick.slice()).forEach(w=>tasks.push({id:w.id,type:perm[w.id][layer]})); }
-  learnState.queue=tasks; learnState.total=pick.length; learnState.mastered=0; learnState.answered=false;
+  learnState.round={}; learnState.queue=[]; learnState.total=target.length; learnState.mastered=0; learnState.answered=false;
+  learnState.pending=target.slice(LEARN_BATCH);     // 尚未登場、之後陸續補進來
+  learnEnqueue(target.slice(0,LEARN_BATCH));         // 先放入第一批
   renderLearn(v);
 };
 
@@ -1689,7 +1697,10 @@ function learnResult(correct,v,info){
     const set=learnState.round[task.id]; set.add(task.type);
     masteredNow = set.size===LEARN_TYPES.length;
     recordCorrect(task.id, masteredNow);
-    if(masteredNow) learnState.mastered++;
+    if(masteredNow){
+      learnState.mastered++;
+      if(learnState.pending.length) learnEnqueue([learnState.pending.shift()]); // 精熟一個就補一個新字進來
+    }
   }else{
     recordWrong(task.id);
     learnState.queue.splice(Math.min(learnState.queue.length,3),0,task);  // 答錯：稍後再考一次（不算不熟）
