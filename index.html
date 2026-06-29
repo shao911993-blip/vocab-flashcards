@@ -401,7 +401,7 @@ function defaultSettings(){
     fcOrder:"original",// original / random
     fcOnlyWeak:false,
     fcOnlyToday:false,
-    autoplay:false,
+    autoSpeak:true,    // 切換上/下一張卡片時自動念一次（預設開啟）
     listenFirst:false,
     // 自動連續播放
     apRepeat:1,        // 每字英文朗讀次數
@@ -1260,7 +1260,7 @@ function buildFcList(){
 VIEWS.flashcards=function(v){
   fcState.list=buildFcList(); fcState.idx=0;
   if(!fcState.list.length){ v.innerHTML=fcEmpty(); $("#fcBack").onclick=()=>go("home"); return; }
-  renderFc(v);
+  renderFc(v); autoSpeakCard();
 };
 
 function fcEmpty(){
@@ -1334,8 +1334,12 @@ function renderFc(v){
   // 觸控滑動
   setupSwipe($("#fcCard"),v);
   updateAutoBtn();
-  // 單張自動播放（舊行為）：自動連播進行中時不重複觸發
-  if(state.settings.autoplay && fcState.revealed && !autoPlay.on) speak(w.word);
+}
+// 切換/顯示卡片時自動念一次（正面英文才念；自動連播進行中不重複觸發）
+function autoSpeakCard(){
+  if(state.settings.autoSpeak && !autoPlay.on && fcState.revealed){
+    const w=fcState.list[fcState.idx]; if(w) speak(w.word);
+  }
 }
 
 function bucketLabel(id){return {familiar:"熟",normal:"普通",weak:"不熟",new:"未學"}[bucket(id)];}
@@ -1370,7 +1374,7 @@ function flipCard(){
   if(autoPlay.on) stopAutoPlay();   // 手動操作即接管，停止自動播放
   if(state.settings.listenFirst && !fcState.revealed){
     fcState.revealed=true; paintFcFaces();
-    if(state.settings.autoplay) speak(fcState.list[fcState.idx].word);
+    if(state.settings.autoSpeak) speak(fcState.list[fcState.idx].word);
   }
   fcState.flipped=!fcState.flipped;
   c.classList.toggle("flip",fcState.flipped);
@@ -1380,7 +1384,7 @@ function fcMove(dir,v){
   const n=fcState.idx+dir;
   if(n<0){ toast("已是第一張"); return; }
   if(n>=fcState.list.length){ toast("已完成本範圍 🎉"); return; }
-  fcState.idx=n; renderFc(v);
+  fcState.idx=n; renderFc(v); autoSpeakCard();
 }
 
 function setupSwipe(card,v){
@@ -1414,7 +1418,7 @@ function openFcSettings(){
     <div class="panel">
       ${toggleRow("只看不熟","fcOnlyWeak",s.fcOnlyWeak)}
       ${toggleRow("只看今日複習","fcOnlyToday",s.fcOnlyToday)}
-      ${toggleRow("單張自動發音","autoplay",s.autoplay)}
+      ${toggleRow("切換卡片時自動發音","autoSpeak",s.autoSpeak)}
       ${toggleRow("先聽再看模式","listenFirst",s.listenFirst)}
     </div>
 
@@ -2182,7 +2186,7 @@ VIEWS.settings=function(v){
 
     <div class="panel">
       <div style="font-weight:700;margin-bottom:6px">單字卡</div>
-      ${toggleRow("自動播放","autoplay",s.autoplay)}
+      ${toggleRow("切換卡片時自動發音","autoSpeak",s.autoSpeak)}
       ${toggleRow("先聽再看","listenFirst",s.listenFirst)}
       ${toggleRow("隨機順序","fcOrderRandom",s.fcOrder==="random")}
     </div>
