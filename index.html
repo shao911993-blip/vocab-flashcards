@@ -403,6 +403,7 @@ function defaultSettings(){
     fcOnlyToday:false,
     autoSpeak:true,    // 切換上/下一張卡片時自動念一次（預設開啟）
     listenFirst:false,
+    dailyGoal:20,      // 每日學習目標（單字數）
     // 自動連續播放
     apRepeat:1,        // 每字英文朗讀次數
     apItemGap:0.8,     // 同卡內段落間停頓（英文重複、英文→中文）（秒）
@@ -1077,13 +1078,16 @@ function progressBar(c,total){
 function streakBannerHtml(){
   const s=currentStreak();
   const today=state.daily[todayStr()]||{words:0,actions:0};
+  const goal=Math.max(1,state.settings.dailyGoal||20);
+  const done=today.words>=goal;
   const msg = s>0 ? `連續學習 ${s} 天` : "今天開始學習吧 💪";
+  const sub = done ? `今日已達標 🎉 (${today.words}/${goal})` : `今日目標 ${today.words} / ${goal} 個`;
   return `<button class="panel" style="width:100%;text-align:left;border:none;cursor:pointer;background:linear-gradient(135deg,#3a2d7a,#6a48f0);color:#fff" data-go="progress">
     <div class="row spread">
       <div class="row" style="gap:12px">
         <span style="font-size:30px">🔥</span>
         <div><div style="font-weight:800;font-size:18px">${msg}</div>
-          <div class="small" style="opacity:.85">今天已學 ${today.words} 個單字</div></div>
+          <div class="small" style="opacity:.85">${sub}</div></div>
       </div>
       <span class="badge" style="background:rgba(255,255,255,.22);color:#fff">紀錄 ▸</span>
     </div>
@@ -1100,18 +1104,22 @@ function lastNDays(n){
   }
   return arr;
 }
-/* 學習熱度圖（GitHub 風格方格）：一格一天，顏色依當天學習字數加深 */
-function heatColor(n){
+/* 學習熱度圖（GitHub 風格方格）：一格一天；達到每日目標當天變綠，未達標依比例加深 */
+function heatColor(n,goal){
   if(n<=0) return "#1b2240";
-  if(n<5)  return "rgba(124,92,255,.35)";
-  if(n<10) return "rgba(124,92,255,.6)";
-  if(n<20) return "rgba(124,92,255,.9)";
-  return "var(--success)";
+  const g=goal>0?goal:20;
+  if(n>=g) return "var(--success)";        // 達標
+  const r=n/g;
+  if(r<0.34) return "rgba(124,92,255,.35)";
+  if(r<0.67) return "rgba(124,92,255,.6)";
+  return "rgba(124,92,255,.9)";
 }
 function heatmapHtml(weeks){
   weeks=weeks||20;
+  const goal=state.settings.dailyGoal||0;
   const today=new Date(); today.setHours(0,0,0,0);
   const iso=dt=>ymd(dt);
+  const cell=weeks>40?11:13;   // 一年視圖縮小一點
   const cur=new Date(today);
   cur.setDate(cur.getDate() - today.getDay() - (weeks-1)*7);  // 對齊到 (weeks-1) 週前的週日
   let cols="";
@@ -1120,13 +1128,24 @@ function heatmapHtml(weeks){
     for(let d=0;d<7;d++){
       const ds=iso(cur), rec=state.daily[ds], n=rec?rec.words:0;
       const future=cur>today;
-      cells+=`<div title="${ds}：${n} 個" style="width:13px;height:13px;border-radius:3px;background:${future?'transparent':heatColor(n)}"></div>`;
+      cells+=`<div title="${ds}：${n} 個" style="width:${cell}px;height:${cell}px;border-radius:3px;background:${future?'transparent':heatColor(n,goal)}"></div>`;
       cur.setDate(cur.getDate()+1);
     }
     cols+=`<div style="display:flex;flex-direction:column;gap:3px">${cells}</div>`;
   }
   return `<div style="display:flex;gap:3px;overflow-x:auto;padding-bottom:4px">${cols}</div>`;
 }
+// 連續達標天數（words>=每日目標）
+function goalStreak(){
+  const goal=state.settings.dailyGoal||0;
+  if(goal<=0) return 0;
+  const ok=d=>state.daily[d] && (state.daily[d].words||0)>=goal;
+  let c=new Date(); c.setHours(0,0,0,0);
+  if(!ok(ymd(c))) c.setDate(c.getDate()-1);
+  let n=0; while(ok(ymd(c))){ n++; c.setDate(c.getDate()-1); }
+  return n;
+}
+let heatWeeks=20;   // 熱度圖顯示範圍（週）：20 / 26 / 53
 
 /* ============================================================
    視圖：學習紀錄（連續天數 / 每日學習量）
@@ -1136,7 +1155,10 @@ VIEWS.progress=function(v){
   const longest=longestStreak();
   const activeDays=Object.keys(state.daily).filter(d=>state.daily[d].actions>0).length;
   const today=state.daily[todayStr()]||{words:0,actions:0};
-  const totalWords=Object.values(state.daily).reduce((s,r)=>s+(r.words||0),0);
+  const goal=Math.max(1,state.settings.dailyGoal||20);
+  const gStreak=goalStreak();
+  const done=today.words>=goal;
+  const pct=Math.min(100,Math.round(today.words/goal*100));
   const days=lastNDays(14);
   const maxW=Math.max(1,...days.map(d=>d.words));
   const cheer = streak>=7 ? "太強了，已經一週以上！👑"
@@ -1146,13 +1168,15 @@ VIEWS.progress=function(v){
 
   const bars = days.map(d=>{
     const h=Math.round(d.words/maxW*100);
-    const dim=new Date(d.date), isToday=d.date===todayStr();
+    const dim=new Date(d.date), isToday=d.date===todayStr(), hit=d.words>=goal;
     return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end">
       <div style="font-size:10px;color:var(--muted);height:12px">${d.words||""}</div>
-      <div style="width:70%;border-radius:5px;height:${Math.max(4,h)}%;background:${d.words?(isToday?'var(--warning)':'var(--primary)'):'#222a52'}"></div>
+      <div style="width:70%;border-radius:5px;height:${Math.max(4,h)}%;background:${d.words?(hit?'var(--success)':(isToday?'var(--warning)':'var(--primary)')):'#222a52'}"></div>
       <div style="font-size:9px;color:${isToday?'var(--warning)':'var(--muted)'}">${dim.getMonth()+1}/${dim.getDate()}</div>
     </div>`;
   }).join("");
+
+  const ranges=[["20","20 週"],["26","半年"],["53","一年"]];
 
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="pgBack">←</button><h2>學習紀錄</h2><span style="width:42px"></span></div>
@@ -1164,11 +1188,27 @@ VIEWS.progress=function(v){
       <div class="small" style="opacity:.85;margin-top:8px">${cheer}</div>
     </div>
 
+    <div class="panel">
+      <div class="row spread" style="margin-bottom:8px">
+        <b>${done?"今日已達標 🎉":"今日目標"}</b>
+        <span class="${done?'badge familiar':'muted small'}">${today.words} / ${goal} 個</span>
+      </div>
+      <div class="bar"><span class="${done?'seg-familiar':'seg-normal'}" style="width:${pct}%"></span></div>
+      <div class="row spread" style="margin-top:12px;align-items:center">
+        <span class="muted small">每日目標</span>
+        <span class="row" style="gap:10px;align-items:center">
+          <button class="iconbtn" data-goal="-5">−</button>
+          <b style="min-width:54px;text-align:center">${goal} 個</b>
+          <button class="iconbtn" data-goal="5">＋</button>
+        </span>
+      </div>
+    </div>
+
     <div class="stat-grid">
       ${statCell(today.words,"今天學了","var(--warning)")}
+      ${statCell(gStreak,"連續達標","var(--success)")}
       ${statCell(longest,"最長連續","var(--familiar)")}
       ${statCell(activeDays,"累計學習天數")}
-      ${statCell(totalWords,"累計學習字次")}
     </div>
 
     <div class="panel" style="margin-top:14px">
@@ -1177,21 +1217,27 @@ VIEWS.progress=function(v){
     </div>
 
     <div class="panel">
-      <div class="row spread" style="margin-bottom:10px"><b>學習熱度圖</b><span class="muted small">最近約 20 週</span></div>
-      ${heatmapHtml(20)}
+      <div class="row spread" style="margin-bottom:10px"><b>學習熱度圖</b>
+        <span class="row" style="gap:6px">${ranges.map(r=>`<button class="chip ${String(heatWeeks)===r[0]?'active':''}" data-weeks="${r[0]}">${r[1]}</button>`).join("")}</span>
+      </div>
+      ${heatmapHtml(heatWeeks)}
       <div class="row" style="gap:6px;justify-content:flex-end;margin-top:8px;align-items:center">
         <span class="muted small">少</span>
-        <div style="width:12px;height:12px;border-radius:3px;background:#1b2240"></div>
         <div style="width:12px;height:12px;border-radius:3px;background:rgba(124,92,255,.35)"></div>
         <div style="width:12px;height:12px;border-radius:3px;background:rgba(124,92,255,.6)"></div>
         <div style="width:12px;height:12px;border-radius:3px;background:rgba(124,92,255,.9)"></div>
-        <div style="width:12px;height:12px;border-radius:3px;background:var(--success)"></div>
-        <span class="muted small">多</span>
+        <div style="width:12px;height:12px;border-radius:3px;background:var(--success)" title="達標"></div>
+        <span class="muted small">達標</span>
       </div>
     </div>
 
-    <p class="muted small center">每天只要有學（單字卡標記、學習或測驗答題）就會記錄，跨教材一起累積。</p>`;
+    <p class="muted small center">綠色＝當天達到每日目標；跨教材一起累積。</p>`;
   $("#pgBack").onclick=()=>go("home");
+  v.querySelectorAll("[data-goal]").forEach(b=>b.onclick=()=>{
+    state.settings.dailyGoal=Math.max(5,(state.settings.dailyGoal||20)+Number(b.dataset.goal));
+    saveSettings(); go("progress");
+  });
+  v.querySelectorAll("[data-weeks]").forEach(b=>b.onclick=()=>{ heatWeeks=Number(b.dataset.weeks); go("progress"); });
 };
 
 /* ============================================================
