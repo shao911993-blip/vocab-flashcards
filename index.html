@@ -379,6 +379,10 @@ const LS = {
 };
 function bookKey(id){ return "vocab_book_"+id; }   // 各書本 JSON 的儲存鍵
 
+// 複習專區：暫時指定一組單字給「學習 / 測驗」使用（離開到首頁或點底部導航即清除）
+let pendingStudyWords=null;
+let reviewScopeAll=true;   // 複習範圍：true=整本教材 / false=目前範圍
+
 /* ---------- 全域狀態 ---------- */
 const state = {
   raw:null,        // 原始 JSON
@@ -876,7 +880,7 @@ function renderNav(active){
       <span class="ico">${n.ico}</span><span>${n.lb}</span>
     </button>`).join("");
   nav.querySelectorAll("[data-nav]").forEach(b=>{
-    b.onclick=()=>go(b.dataset.nav);
+    b.onclick=()=>{ pendingStudyWords=null; go(b.dataset.nav); };
   });
 }
 
@@ -1002,6 +1006,7 @@ VIEWS.library=function(v){
    視圖：學習集首頁
    ============================================================ */
 VIEWS.home=function(v){
+  pendingStudyWords=null;   // 回到首頁就脫離複習情境
   const words=scopeWords();
   const counts=progressCounts(words);
   const due=words.filter(w=>isDueToday(w.id)).length;
@@ -1643,7 +1648,7 @@ function learnEnqueue(words){
 }
 
 VIEWS.learn=function(v){
-  const words=scopeWords();
+  const words=(pendingStudyWords&&pendingStudyWords.length)?pendingStudyWords:scopeWords();
   if(words.length<1){ v.innerHTML=simpleEmpty("學習","這個範圍沒有單字"); $("#eBack").onclick=()=>go("home"); return; }
   // 目標＝整個範圍裡「還沒精熟」的字（全部，不再只取 8 個）；已全精熟則重練全部
   const notMastered=words.filter(w=>getProg(w.id).status!=="mastered");
@@ -1800,8 +1805,9 @@ function chunkUnits(part,size){
   for(let i=0;i<us.length;i+=size) groups.push(us.slice(i,i+size));
   return groups;
 }
-// 測驗實際取用的單字池：有自選單元就用自選，否則用目前範圍
+// 測驗實際取用的單字池：複習指定 > 自選單元 > 目前範圍
 function testPool(){
+  if(pendingStudyWords && pendingStudyWords.length) return pendingStudyWords;
   if(testCfg.unitKeys && testCfg.unitKeys.length){
     const set=new Set(testCfg.unitKeys);
     const arr=state.flat.filter(w=>set.has(w.part+"_"+w.unit));
@@ -1810,6 +1816,7 @@ function testPool(){
   return scopeWords();
 }
 function testScopeLabel(){
+  if(pendingStudyWords && pendingStudyWords.length) return `複習：${pendingStudyWords.length} 個字`;
   if(testCfg.unitKeys && testCfg.unitKeys.length) return `自選 ${testCfg.unitKeys.length} 單元 · ${testPool().length} 字`;
   return scopeLabel()+"（目前範圍）";
 }
@@ -2265,32 +2272,47 @@ function wordCardWithRemove(w,special){
    視圖：複習專區（集中今日待複習的字：不熟 / 到期 / 錯字本）
    ============================================================ */
 VIEWS.review=function(v){
-  const dueAll=state.flat.filter(w=>isDueToday(w.id));   // 整本教材待複習
-  const weakN=dueAll.filter(w=>bucket(w.id)==="weak").length;
-  const wrongN=dueAll.filter(w=>getProg(w.id).inWrong).length;
+  const base=reviewScopeAll ? state.flat : scopeWords();   // 整本 / 目前範圍
+  const due=base.filter(w=>isDueToday(w.id));
+  const weakN=due.filter(w=>bucket(w.id)==="weak").length;
+  const wrongN=due.filter(w=>getProg(w.id).inWrong).length;
   v.innerHTML=`
     <div class="topbar"><button class="iconbtn" id="rvBack">←</button><h2>複習專區</h2><span style="width:42px"></span></div>
-    <div class="panel center" style="background:${dueAll.length?'linear-gradient(135deg,#b8632a,#ff8a3d)':'var(--cardGrad)'};color:#fff">
-      <div style="font-size:40px">📅</div>
-      <div style="font-size:36px;font-weight:800;line-height:1.1">${dueAll.length} 個</div>
-      <div style="opacity:.9">今日待複習（整本教材）</div>
-      ${dueAll.length?`<div class="small" style="opacity:.85;margin-top:6px">不熟 ${weakN} · 錯字本 ${wrongN}</div>`:""}
+
+    <div class="seg" style="margin-bottom:14px">
+      <button data-rscope="all" class="${reviewScopeAll?'active':''}">整本教材</button>
+      <button data-rscope="scope" class="${reviewScopeAll?'':'active'}">目前範圍</button>
     </div>
-    ${dueAll.length?`
-      <button class="btn primary" id="rvCards" style="margin-bottom:10px">🃏 用單字卡複習這些字</button>
+
+    <div class="panel center" style="background:${due.length?'linear-gradient(135deg,#b8632a,#ff8a3d)':'var(--cardGrad)'};color:#fff">
+      <div style="font-size:40px">📅</div>
+      <div style="font-size:36px;font-weight:800;line-height:1.1">${due.length} 個</div>
+      <div style="opacity:.9">待複習${reviewScopeAll?"（整本教材）":`（${esc(scopeLabel())}）`}</div>
+      ${due.length?`<div class="small" style="opacity:.85;margin-top:6px">不熟 ${weakN} · 錯字本 ${wrongN}</div>`:""}
+    </div>
+    ${due.length?`
+      <div class="muted small" style="margin:4px 2px 8px">用哪種方式複習這 ${due.length} 個字？</div>
+      <div class="grid3" style="margin-bottom:14px">
+        <button class="tile accent" id="rvCards"><span class="ico">🃏</span><span class="lb">單字卡</span></button>
+        <button class="tile accent" id="rvLearn"><span class="ico">📚</span><span class="lb">學習</span></button>
+        <button class="tile" id="rvTest"><span class="ico">📝</span><span class="lb">測驗</span></button>
+      </div>
       <div class="muted small" style="margin:8px 2px">待複習清單（點單字進單字卡）</div>
       <div id="rvItems"></div>
-    `:`<div class="empty"><div class="ico">✅</div>今天沒有待複習的字<br><span class="small">去學新字，或用其他模式練習吧</span></div>`}
+    `:`<div class="empty"><div class="ico">✅</div>這個範圍今天沒有待複習的字<br><span class="small">去學新字，或切換範圍看看</span></div>`}
     <p class="muted small center" style="margin-top:12px">「待複習」＝不熟的字、到了間隔複習日期的字、或在錯字本的字。</p>`;
   $("#rvBack").onclick=()=>go("home");
-  if(dueAll.length){
+  v.querySelectorAll("[data-rscope]").forEach(b=>b.onclick=()=>{ reviewScopeAll=b.dataset.rscope==="all"; go("review"); });
+  if(due.length){
     const box=$("#rvItems");
-    box.innerHTML=dueAll.map(w=>wordCardHtml(w)).join("");
-    bindWordCards(box,dueAll,"review");
+    box.innerHTML=due.map(w=>wordCardHtml(w)).join("");
+    bindWordCards(box,due,"review");
     $("#rvCards").onclick=()=>{
-      fcState.list=dueAll.slice(); fcState.idx=0;
+      fcState.list=due.slice(); fcState.idx=0;
       state.view="flashcards"; const vv=viewEl(); vv.className="view with-nav"; renderNav("flashcards"); renderFc(vv); autoSpeakCard();
     };
+    $("#rvLearn").onclick=()=>{ pendingStudyWords=due.slice(); go("learn"); };
+    $("#rvTest").onclick=()=>{ pendingStudyWords=due.slice(); go("testSetup"); };
   }
 };
 
