@@ -880,7 +880,7 @@ function renderNav(active){
   });
 }
 
-const navGroup={home:"home",library:"home",progress:"home",flashcards:"flashcards",learn:"learn",
+const navGroup={home:"home",library:"home",progress:"home",review:"home",flashcards:"flashcards",learn:"learn",
   testSetup:"testSetup",testScope:"testSetup",test:"testSetup",stats:"stats"};
 
 function go(view){
@@ -1005,6 +1005,7 @@ VIEWS.home=function(v){
   const words=scopeWords();
   const counts=progressCounts(words);
   const due=words.filter(w=>isDueToday(w.id)).length;
+  const dueAll=state.flat.filter(w=>isDueToday(w.id)).length;   // 整本教材待複習數
   const first=words[0];
   v.innerHTML=`
     <div class="topbar">
@@ -1046,6 +1047,15 @@ VIEWS.home=function(v){
         <span><span class="badge new">未學 ${counts.new}</span></span>
       </div>
     </div>
+
+    <button class="panel" data-go="review" style="width:100%;border:none;cursor:pointer;color:#fff;background:${dueAll?'linear-gradient(135deg,#b8632a,#ff8a3d)':'#1d2745'};margin-bottom:14px">
+      <div class="row spread">
+        <div class="row" style="gap:12px"><span style="font-size:26px">📅</span>
+          <div><div style="font-weight:800;font-size:17px">複習專區</div>
+            <div class="small" style="opacity:.9">${dueAll?`今日待複習 ${dueAll} 個`:"今天沒有待複習，超棒 ✅"}</div></div></div>
+        <span class="badge" style="background:rgba(255,255,255,.22);color:#fff">開始 ▸</span>
+      </div>
+    </button>
 
     <div class="grid2">
       <button class="tile accent" data-go="flashcards"><span class="ico">🃏</span><span class="lb">單字卡</span></button>
@@ -1600,7 +1610,7 @@ function bindWordCards(box,arr,from){
   box.querySelectorAll("[data-play]").forEach(b=>b.onclick=e=>{e.stopPropagation();speak(b.dataset.play);});
   box.querySelectorAll("[data-fav]").forEach(b=>b.onclick=e=>{
     e.stopPropagation(); toggleFav(b.dataset.fav);
-    if(from==="favorites")go("favorites"); else if(from==="wrong")go("wrong"); else renderListItems();
+    if(from==="favorites")go("favorites"); else if(from==="wrong")go("wrong"); else if(from==="review")go("review"); else renderListItems();
   });
   box.querySelectorAll(".wcard").forEach(c=>c.onclick=()=>{
     // 點擊進入該單字的單字卡
@@ -2250,6 +2260,39 @@ function wordCardWithRemove(w,special){
       <button class="iconbtn" data-remove="${esc(w.id)}">${special==="fav"?"★":"✕"}</button>
     </div></div>`;
 }
+
+/* ============================================================
+   視圖：複習專區（集中今日待複習的字：不熟 / 到期 / 錯字本）
+   ============================================================ */
+VIEWS.review=function(v){
+  const dueAll=state.flat.filter(w=>isDueToday(w.id));   // 整本教材待複習
+  const weakN=dueAll.filter(w=>bucket(w.id)==="weak").length;
+  const wrongN=dueAll.filter(w=>getProg(w.id).inWrong).length;
+  v.innerHTML=`
+    <div class="topbar"><button class="iconbtn" id="rvBack">←</button><h2>複習專區</h2><span style="width:42px"></span></div>
+    <div class="panel center" style="background:${dueAll.length?'linear-gradient(135deg,#b8632a,#ff8a3d)':'var(--cardGrad)'};color:#fff">
+      <div style="font-size:40px">📅</div>
+      <div style="font-size:36px;font-weight:800;line-height:1.1">${dueAll.length} 個</div>
+      <div style="opacity:.9">今日待複習（整本教材）</div>
+      ${dueAll.length?`<div class="small" style="opacity:.85;margin-top:6px">不熟 ${weakN} · 錯字本 ${wrongN}</div>`:""}
+    </div>
+    ${dueAll.length?`
+      <button class="btn primary" id="rvCards" style="margin-bottom:10px">🃏 用單字卡複習這些字</button>
+      <div class="muted small" style="margin:8px 2px">待複習清單（點單字進單字卡）</div>
+      <div id="rvItems"></div>
+    `:`<div class="empty"><div class="ico">✅</div>今天沒有待複習的字<br><span class="small">去學新字，或用其他模式練習吧</span></div>`}
+    <p class="muted small center" style="margin-top:12px">「待複習」＝不熟的字、到了間隔複習日期的字、或在錯字本的字。</p>`;
+  $("#rvBack").onclick=()=>go("home");
+  if(dueAll.length){
+    const box=$("#rvItems");
+    box.innerHTML=dueAll.map(w=>wordCardHtml(w)).join("");
+    bindWordCards(box,dueAll,"review");
+    $("#rvCards").onclick=()=>{
+      fcState.list=dueAll.slice(); fcState.idx=0;
+      state.view="flashcards"; const vv=viewEl(); vv.className="view with-nav"; renderNav("flashcards"); renderFc(vv); autoSpeakCard();
+    };
+  }
+};
 
 /* ============================================================
    視圖：統計
