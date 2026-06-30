@@ -1210,7 +1210,10 @@ VIEWS.progress=function(v){
         <span class="${done?'badge familiar':'muted small'}">${today.words} / ${goal} 個</span>
       </div>
       <div class="bar"><span class="${done?'seg-familiar':'seg-normal'}" style="width:${pct}%"></span></div>
-      ${(today.reviewed||0)?`<div class="muted small" style="margin-top:8px">今日複習 ${today.reviewed} 個（複習舊字不計入學習目標）</div>`:""}
+      <div class="row" style="gap:16px;margin-top:8px">
+        <span class="small"><b style="color:var(--warning)">${today.words||0}</b> <span class="muted">今天學的新字</span></span>
+        <span class="small"><b style="color:var(--familiar)">${today.reviewed||0}</b> <span class="muted">今天複習的舊字</span></span>
+      </div>
       <div class="row spread" style="margin-top:12px;align-items:center">
         <span class="muted small">每日目標</span>
         <span class="row" style="gap:10px;align-items:center">
