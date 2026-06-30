@@ -582,13 +582,20 @@ function saveScope(){ try{localStorage.setItem(LS.scope,JSON.stringify(state.sco
 
 /* ---------- 每日學習量 / 連續天數（鼓勵養成習慣） ---------- */
 function saveDaily(){ try{ localStorage.setItem(LS.daily,JSON.stringify(state.daily)); }catch(e){} }
-// 記錄一次學習動作；isNewWordToday 代表這個字今天第一次學（用來算「今天學了幾個字」）
-function logDaily(isNewWordToday){
+// 記錄一次學習動作。kind: "learn"=第一次學到的新字（算「今天學了」）；"review"=以前學過、今天首次複習；"none"=同日重複
+function logDaily(kind){
   const d=todayStr();
-  if(!state.daily[d]) state.daily[d]={actions:0,words:0};
+  if(!state.daily[d]) state.daily[d]={actions:0,words:0,reviewed:0};
   state.daily[d].actions++;
-  if(isNewWordToday) state.daily[d].words++;
+  if(kind==="learn")   state.daily[d].words=(state.daily[d].words||0)+1;
+  else if(kind==="review") state.daily[d].reviewed=(state.daily[d].reviewed||0)+1;
   saveDaily();
+}
+// 判斷這次學習對某字算「新學 / 複習 / 重複」（需在 p.seen++、p.last 更新「之前」呼叫）
+function dailyKind(p){
+  if(p.seen===0) return "learn";                 // 從未學過 → 真正的新學
+  if(p.last!==todayStr()) return "review";        // 以前學過、今天第一次碰 → 複習
+  return "none";                                  // 同一天重複練同一字
 }
 // 目前連續天數：從今天（若今天已學）或昨天往回數連續有學習的天數
 function currentStreak(){
@@ -617,33 +624,33 @@ function longestStreak(){
 /* 套用熟悉度（單字卡三按鈕） */
 function setFamiliarity(id,level){ // level: weak/normal/familiar
   const p=getProg(id);
-  const isNew=p.last!==todayStr();   // 今天第一次學這個字？
+  const kind=dailyKind(p);
   p.seen++; p.last=todayStr();
   if(level==="weak"){ p.status="weak"; p.streak=0; p.next=addDays(1); }
   else if(level==="normal"){ p.status="normal"; p.next=addDays(3); }
   else if(level==="familiar"){
     p.streak++; p.status = p.streak>=2 ? "mastered" : "familiar"; p.next=addDays(7);
   }
-  saveProg(); logDaily(isNew);
+  saveProg(); logDaily(kind);
 }
 /* 答對更新（mastered=true 代表通過學習闖關，直接標記為熟） */
 function recordCorrect(id,mastered){
   const p=getProg(id);
-  const isNew=p.last!==todayStr();
+  const kind=dailyKind(p);
   p.seen++; p.last=todayStr(); p.correct++; p.streak++;
   if(mastered){ p.status="mastered"; p.next=addDays(7); }
   else if(p.streak>=2){ p.status="familiar"; p.next=addDays(7); }
   else { p.status="normal"; p.next=addDays(3); }
-  saveProg(); logDaily(isNew);
+  saveProg(); logDaily(kind);
 }
 /* 答錯更新：錯一次不會立刻變不熟；累計錯 2 次以上才標記不熟並進錯字本 */
 function recordWrong(id){
   const p=getProg(id);
-  const isNew=p.last!==todayStr();
+  const kind=dailyKind(p);
   p.seen++; p.last=todayStr(); p.wrong++; p.streak=0;
   if(p.wrong>=2){ p.status="weak"; p.inWrong=true; p.next=addDays(1); }
   else { if(p.status==="mastered"||p.status==="familiar") p.status="normal"; p.next=addDays(1); }
-  saveProg(); logDaily(isNew);
+  saveProg(); logDaily(kind);
 }
 /* 測驗用：對 / 錯 */
 function recordAnswer(id,correct){ correct ? recordCorrect(id,false) : recordWrong(id);
@@ -1088,8 +1095,9 @@ function streakBannerHtml(){
   const today=state.daily[todayStr()]||{words:0,actions:0};
   const goal=Math.max(1,state.settings.dailyGoal||20);
   const done=today.words>=goal;
+  const rev=today.reviewed||0;
   const msg = s>0 ? `連續學習 ${s} 天` : "今天開始學習吧 💪";
-  const sub = done ? `今日已達標 🎉 (${today.words}/${goal})` : `今日目標 ${today.words} / ${goal} 個`;
+  const sub = (done ? `今日已達標 🎉 (${today.words}/${goal})` : `今日目標 ${today.words} / ${goal} 個`) + (rev?` · 複習 ${rev}`:"");
   return `<button class="panel" style="width:100%;text-align:left;border:none;cursor:pointer;background:linear-gradient(135deg,#3a2d7a,#6a48f0);color:#fff" data-go="progress">
     <div class="row spread">
       <div class="row" style="gap:12px">
@@ -1202,6 +1210,7 @@ VIEWS.progress=function(v){
         <span class="${done?'badge familiar':'muted small'}">${today.words} / ${goal} 個</span>
       </div>
       <div class="bar"><span class="${done?'seg-familiar':'seg-normal'}" style="width:${pct}%"></span></div>
+      ${(today.reviewed||0)?`<div class="muted small" style="margin-top:8px">今日複習 ${today.reviewed} 個（複習舊字不計入學習目標）</div>`:""}
       <div class="row spread" style="margin-top:12px;align-items:center">
         <span class="muted small">每日目標</span>
         <span class="row" style="gap:10px;align-items:center">
